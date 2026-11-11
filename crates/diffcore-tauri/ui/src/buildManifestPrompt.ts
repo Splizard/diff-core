@@ -19,7 +19,7 @@ You are refining the flow groupings for a PR diff analysis. The groupings have b
 
 \`\`\`bash
 # Install the Diffcore CLI (if not already installed)
-cargo install --git https://github.com/jamesaphoenix/diff-core.git diffcore-cli
+cargo install --git https://github.com/Splizard/diff-core.git diffcore-cli
 
 # Verify installation
 diffcore --version

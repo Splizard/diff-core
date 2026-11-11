@@ -9,8 +9,6 @@
       "allow": [
         { "url": "https://**" }
       ]
-    },
-    "updater:default",
-    "process:allow-restart"
+    }
   ]
 }

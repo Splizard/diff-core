@@ -520,8 +520,6 @@ export default function App() {
   const [watchedManifestPath, setWatchedManifestPath] = useState<string | null>(null);
 
   // Update notification state
-  const [updateAvailable, setUpdateAvailable] = useState<{ version: string; body: string } | null>(null);
-  const [updating, setUpdating] = useState(false);
 
   // Toast notification state (auto-dismiss)
   const [toast, setToast] = useState<string | null>(null);
@@ -1893,22 +1891,6 @@ export default function App() {
   const refreshAiAccess = useCallback(async () => {
     await loadLlmSettings(repoPath || null);
   }, [loadLlmSettings, repoPath]);
-
-  // Check for updates on startup
-  useEffect(() => {
-    if (!IS_TAURI) return;
-    (async () => {
-      try {
-        const { check } = await import("@tauri-apps/plugin-updater");
-        const update = await check();
-        if (update) {
-          setUpdateAvailable({ version: update.version, body: update.body ?? "" });
-        }
-      } catch {
-        // Update check failed silently — non-fatal
-      }
-    })();
-  }, []);
 
   // Auto-scroll disabled — users control scroll position manually.
 
@@ -3331,39 +3313,6 @@ export default function App() {
 
   return (
     <div className="app">
-      {/* Update banner */}
-      {updateAvailable && (
-        <div className="update-banner">
-          <span>Diffcore v{updateAvailable.version} is available</span>
-          <button
-            className="btn btn-refine"
-            disabled={updating}
-            onClick={async () => {
-              setUpdating(true);
-              try {
-                const { check } = await import("@tauri-apps/plugin-updater");
-                const update = await check();
-                if (update) {
-                  await update.downloadAndInstall();
-                  const { relaunch } = await import("@tauri-apps/plugin-process");
-                  await relaunch();
-                }
-              } catch {
-                setUpdating(false);
-              }
-            }}
-          >
-            {updating ? "Updating..." : "Update & Restart"}
-          </button>
-          <button
-            className="update-dismiss"
-            onClick={() => setUpdateAvailable(null)}
-            title="Dismiss"
-          >
-            &times;
-          </button>
-        </div>
-      )}
       {/* Top bar */}
       <header className="top-bar">
         <div className="top-bar-left">

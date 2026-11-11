@@ -155,7 +155,7 @@ rustPlatform.buildRustPackage {
         "Semantic diff layer for code review (web server)"
       else
         "Semantic diff layer for code review";
-    homepage = "https://github.com/jamesaphoenix/diff-core";
+    homepage = "https://github.com/Splizard/diff-core";
     license = lib.licenses.mit;
     mainProgram = if webMode then "diffcore-web" else "diffcore";
   };
