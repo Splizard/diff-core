@@ -314,6 +314,9 @@ export default function App() {
   // Refs the user picked win over auto-detect for the restored repo only;
   // auto-detected refs are re-detected so a reload still sees a new checkout.
   const refsPinned = useRef(restored && !!session.refsPinned);
+  // Bumped on every source/target pick, so loadRepoInfo can tell a pick that
+  // landed while it was awaiting the repo from one made before it started.
+  const refPickEpoch = useRef(0);
   const restoredRepo = useRef(restored && session.refsPinned ? session.repoPath : null);
   // Groups manifest watching state. Declared here because the session saved
   // below records it, so a relaunch can re-apply the hand-edited groups.
@@ -672,6 +675,9 @@ export default function App() {
   /** Fetch repository info (branches, worktrees, status). */
   const loadRepoInfo = useCallback(async (path: string) => {
     if (!path) return;
+    // A branch the user picks while this load is in flight must win over the
+    // defaults it is about to apply.
+    const pickEpoch = refPickEpoch.current;
     try {
       let info: RepoInfo;
       if (HAS_BACKEND) {
@@ -681,7 +687,8 @@ export default function App() {
         info = MOCK_REPO_INFO;
       }
       setRepoInfo(info);
-      const keepRefs = prRefs.current || restoredRepo.current === path;
+      const pickedDuringLoad = refPickEpoch.current !== pickEpoch;
+      const keepRefs = prRefs.current || restoredRepo.current === path || pickedDuringLoad;
       if (restoredRepo.current !== path) restoredRepo.current = null;
       if (!keepRefs) {
         refsPinned.current = false;
@@ -2556,12 +2563,14 @@ export default function App() {
 
   const handleSelectBase = useCallback((branch: string) => {
     refsPinned.current = true;
+    refPickEpoch.current += 1;
     setBaseRef(branch);
     setBranchDropdownOpen(false);
   }, []);
 
   const handleSelectHead = useCallback((branch: string) => {
     refsPinned.current = true;
+    refPickEpoch.current += 1;
     setHeadBranchDropdownOpen(false);
     // If the picked branch is checked out in a different worktree, switch
     // the nav bar to that worktree's path. Otherwise the fallback diff
