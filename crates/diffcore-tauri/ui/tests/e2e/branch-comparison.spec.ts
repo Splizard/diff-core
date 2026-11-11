@@ -231,3 +231,65 @@ test.describe("Head Ref State", () => {
     await expect(headName).toHaveText("develop");
   });
 });
+
+// ── Type-to-filter in the branch dropdowns ──
+
+test.describe("Branch dropdown filter", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto("/");
+    await waitForAnalysis(page);
+    await page.evaluate((info) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (window as any).__TEST_API__.setRepoInfo(info);
+    }, makeRepoInfo());
+    await page.waitForTimeout(300);
+  });
+
+  const base = "[data-testid='base-branch-dropdown']";
+
+  test("F1 — opening a dropdown focuses its filter box", async ({ page }) => {
+    await page.locator(`${base} .branch-dropdown-trigger`).click();
+    await expect(page.locator(`${base} .branch-filter-input`)).toBeFocused();
+  });
+
+  test("F2 — typing narrows the list, every term must match", async ({ page }) => {
+    await page.locator(`${base} .branch-dropdown-trigger`).click();
+    const options = page.locator(`${base} .branch-option`);
+    await expect(options).toHaveCount(4);
+    await page.keyboard.type("feat auth");
+    await expect(options).toHaveCount(1);
+    await expect(options.first()).toContainText("feature/user-auth");
+  });
+
+  test("F3 — Enter picks the highlighted match, arrows move it", async ({ page }) => {
+    await page.locator(`${base} .branch-dropdown-trigger`).click();
+    await page.keyboard.type("e"); // feature/user-auth, develop, staging
+    await page.keyboard.press("ArrowDown");
+    await page.keyboard.press("Enter");
+    await expect(page.locator(`${base} .branch-dropdown`)).not.toBeVisible();
+    await expect(page.locator(`${base} .branch-name`)).toHaveText("develop");
+  });
+
+  test("F4 — Escape closes without changing the branch", async ({ page }) => {
+    const before = await page.locator(`${base} .branch-name`).textContent();
+    await page.locator(`${base} .branch-dropdown-trigger`).click();
+    await page.keyboard.type("stag");
+    await page.keyboard.press("Escape");
+    await expect(page.locator(`${base} .branch-dropdown`)).not.toBeVisible();
+    await expect(page.locator(`${base} .branch-name`)).toHaveText(before ?? "");
+  });
+
+  test("F5 — no match says so", async ({ page }) => {
+    await page.locator(`${base} .branch-dropdown-trigger`).click();
+    await page.keyboard.type("nope-nothing");
+    await expect(page.locator(`${base} .branch-option.disabled`)).toContainText("No branches match");
+  });
+
+  test("F6 — typing j/k in the filter does not move between groups", async ({ page }) => {
+    const selected = await page.locator(".group-item.selected .group-name").textContent();
+    await page.locator(`${base} .branch-dropdown-trigger`).click();
+    await page.keyboard.type("jk");
+    await expect(page.locator(`${base} .branch-filter-input`)).toHaveValue("jk");
+    await expect(page.locator(".group-item.selected .group-name")).toHaveText(selected ?? "");
+  });
+});

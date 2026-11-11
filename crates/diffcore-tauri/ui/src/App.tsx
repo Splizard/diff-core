@@ -30,6 +30,7 @@ import { THEMES, applyTheme, getTheme, loadThemePrefs, saveThemePrefs, normalize
 import { MOCK_ANALYSIS, MOCK_DIFFS, MOCK_PASS2, MOCK_REPO_INFO, MOCK_LLM_SETTINGS, MOCK_RESOLVED_PR } from "./mock";
 
 import { IS_TAURI, HAS_BACKEND, DEFAULT_REPO, invoke as tauriInvoke } from "./backend";
+import { BranchDropdownList } from "./components/BranchDropdownList";
 
 /** Panel width bounds, mirroring MIN/MAX_PANEL_WIDTH in diffcore-core. */
 const clampPanelWidth = (width: number) => Math.max(200, Math.min(800, width));
@@ -103,14 +104,27 @@ type StoredSession = {
   defaultRepo: string | null;
   analyzedRepo: string | null;
   refsPinned: boolean;
+  /** Groups manifest being watched for the analyzed repo, re-applied on restore. */
+  manifestPath?: string | null;
 };
 type StoredJob = AsyncLlmJobStart & { repoPath: string; baseRef: string; headRef: string | null };
 
-// Desktop never reloads and its SSE URLs carry a per-launch port, so it opts out.
-function loadStored<T>(key: string): T | null {
-  if (IS_TAURI) return null;
+// Where a key is kept. Browser mode uses sessionStorage so a reload resumes
+// the tab it came from. The desktop app keeps the session (last repo and
+// refs) in localStorage so relaunching reopens the last project, but opts out
+// of jobs: their SSE URLs carry a per-launch port and are dead after a restart.
+function storageFor(key: string): Storage | null {
   try {
-    const raw = sessionStorage.getItem(key);
+    if (!IS_TAURI) return sessionStorage;
+    return key === SESSION_KEY ? localStorage : null;
+  } catch {
+    return null;
+  }
+}
+
+function loadStored<T>(key: string): T | null {
+  try {
+    const raw = storageFor(key)?.getItem(key);
     return raw ? (JSON.parse(raw) as T) : null;
   } catch {
     return null;
@@ -118,9 +132,8 @@ function loadStored<T>(key: string): T | null {
 }
 
 function saveStored(key: string, value: unknown): void {
-  if (IS_TAURI) return;
   try {
-    sessionStorage.setItem(key, JSON.stringify(value));
+    storageFor(key)?.setItem(key, JSON.stringify(value));
   } catch {
     // Non-fatal: the session just won't survive a reload
   }
@@ -302,6 +315,9 @@ export default function App() {
   // auto-detected refs are re-detected so a reload still sees a new checkout.
   const refsPinned = useRef(restored && !!session.refsPinned);
   const restoredRepo = useRef(restored && session.refsPinned ? session.repoPath : null);
+  // Groups manifest watching state. Declared here because the session saved
+  // below records it, so a relaunch can re-apply the hand-edited groups.
+  const [watchedManifestPath, setWatchedManifestPath] = useState<string | null>(null);
   useEffect(() => {
     saveStored(SESSION_KEY, {
       repoPath,
@@ -310,8 +326,9 @@ export default function App() {
       defaultRepo: DEFAULT_REPO,
       analyzedRepo: analysis ? lastBackendArgs.current.analyze?.repoPath ?? null : null,
       refsPinned: refsPinned.current,
+      manifestPath: watchedManifestPath,
     });
-  }, [repoPath, baseRef, headRef, analysis]);
+  }, [repoPath, baseRef, headRef, analysis, watchedManifestPath]);
   const [branchDropdownOpen, setBranchDropdownOpen] = useState(false);
   const [headBranchDropdownOpen, setHeadBranchDropdownOpen] = useState(false);
 
@@ -492,8 +509,6 @@ export default function App() {
     });
   }, []);
 
-  // Groups manifest watching state
-  const [watchedManifestPath, setWatchedManifestPath] = useState<string | null>(null);
 
   // Update notification state
 
@@ -1174,11 +1189,13 @@ export default function App() {
         handleSelectGroup(sorted[0]);
       }
       void describeGroups();
+      return true;
     } catch (e) {
       setError(String(e));
       // Re-focus the repo input so user can fix the path
       repoInputRef.current?.focus();
       repoInputRef.current?.select();
+      return false;
     } finally {
       setLoading(false);
     }
@@ -1366,7 +1383,21 @@ export default function App() {
   useEffect(() => {
     if (!restorePending.current || !llmSettings) return;
     restorePending.current = false;
-    runAnalysis().then(reattachJobs);
+    runAnalysis()
+      .then(async (ok) => {
+        // Re-apply the hand-edited groups the last session was watching, but
+        // only a manifest inside the restored repo and only once the fresh
+        // analysis it patches has landed in the backend.
+        const manifest = session?.manifestPath;
+        const repoDir = repoPath.trim().replace(/\/+$/, "");
+        if (!ok || !manifest || !manifest.startsWith(`${repoDir}/`)) return;
+        if (await importGroupsManifest(manifest)) {
+          await tauriInvoke("watch_manifest", { manifestPath: manifest }).catch(() => {});
+          setWatchedManifestPath(manifest);
+        }
+      })
+      .then(reattachJobs);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [llmSettings, runAnalysis, reattachJobs]);
 
   // Auto-load demo data when not in Tauri
@@ -2055,8 +2086,10 @@ export default function App() {
         handleSelectGroup(sorted[0]);
       }
       showToast(`Loaded ${updated.groups.length} groups from manifest`);
+      return true;
     } catch (e) {
       showToast(`Failed to import manifest: ${String(e)}`);
+      return false;
     }
   }, [handleSelectGroup, showToast]);
 
@@ -3109,22 +3142,12 @@ export default function App() {
                 <span className="dropdown-arrow">&#9662;</span>
               </button>
               {headBranchDropdownOpen && (
-                <ul className="branch-dropdown">
-                  {baseBranches.map((b) => (
-                    <li
-                      key={b.name}
-                      className={`branch-option ${b.name === headRef ? "selected" : ""} ${b.is_current ? "current" : ""}`}
-                      onClick={() => handleSelectHead(b.name)}
-                    >
-                      <span className="branch-option-name">{b.name}</span>
-                      {b.is_current && <span className="branch-current-badge">current</span>}
-                      {b.has_upstream && <span className="branch-upstream-badge">tracked</span>}
-                    </li>
-                  ))}
-                  {baseBranches.length === 0 && (
-                    <li className="branch-option disabled">No branches found</li>
-                  )}
-                </ul>
+                <BranchDropdownList
+                  branches={baseBranches}
+                  selected={headRef}
+                  onSelect={handleSelectHead}
+                  onClose={() => setHeadBranchDropdownOpen(false)}
+                />
               )}
             </div>
 
@@ -3146,22 +3169,12 @@ export default function App() {
                 <span className="dropdown-arrow">&#9662;</span>
               </button>
               {branchDropdownOpen && (
-                <ul className="branch-dropdown">
-                  {baseBranches.map((b) => (
-                    <li
-                      key={b.name}
-                      className={`branch-option ${b.name === baseRef ? "selected" : ""} ${b.is_current ? "current" : ""}`}
-                      onClick={() => handleSelectBase(b.name)}
-                    >
-                      <span className="branch-option-name">{b.name}</span>
-                      {b.is_current && <span className="branch-current-badge">current</span>}
-                      {b.has_upstream && <span className="branch-upstream-badge">tracked</span>}
-                    </li>
-                  ))}
-                  {baseBranches.length === 0 && (
-                    <li className="branch-option disabled">No branches found</li>
-                  )}
-                </ul>
+                <BranchDropdownList
+                  branches={baseBranches}
+                  selected={baseRef}
+                  onSelect={handleSelectBase}
+                  onClose={() => setBranchDropdownOpen(false)}
+                />
               )}
             </div>
 

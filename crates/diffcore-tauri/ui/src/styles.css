@@ -2775,8 +2775,36 @@ body {
   transition: background 0.1s ease;
 }
 
-.branch-option:hover {
+.branch-option:hover,
+.branch-option.active {
   background: var(--bg-hover);
+}
+
+/* Sticky so the filter stays put while a long branch list scrolls under it. */
+.branch-filter {
+  position: sticky;
+  top: -4px;
+  margin: -4px -4px 4px;
+  padding: 6px;
+  background: var(--bg-primary);
+  border-bottom: 1px solid var(--border);
+  z-index: 1;
+}
+
+.branch-filter-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 5px 8px;
+  font-size: 12.5px;
+  color: var(--text-primary);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  outline: none;
+}
+
+.branch-filter-input:focus {
+  border-color: var(--accent);
 }
 
 .branch-option.selected {
