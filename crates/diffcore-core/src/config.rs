@@ -164,6 +164,9 @@ pub struct UiConfig {
     /// Whether the right-hand panel is collapsed.
     #[serde(default)]
     pub right_panel_collapsed: bool,
+    /// Width of the left-hand flow groups panel in pixels.
+    #[serde(default = "default_left_panel_width")]
+    pub left_panel_width: u32,
 }
 
 /// How the active theme is chosen. An enum so serde rejects garbage at parse
@@ -189,6 +192,10 @@ fn default_right_panel_width() -> u32 {
     320
 }
 
+fn default_left_panel_width() -> u32 {
+    280
+}
+
 /// Panel width bounds, mirroring the drag clamp in the UI. A width outside
 /// this range renders an unusable layout, so it is clamped on both read and
 /// write rather than trusted.
@@ -203,6 +210,7 @@ impl Default for UiConfig {
             theme_dark: default_theme_dark(),
             right_panel_width: default_right_panel_width(),
             right_panel_collapsed: false,
+            left_panel_width: default_left_panel_width(),
         }
     }
 }
@@ -254,6 +262,9 @@ impl UiConfig {
     fn clamp(&mut self) {
         self.right_panel_width = self
             .right_panel_width
+            .clamp(MIN_PANEL_WIDTH, MAX_PANEL_WIDTH);
+        self.left_panel_width = self
+            .left_panel_width
             .clamp(MIN_PANEL_WIDTH, MAX_PANEL_WIDTH);
     }
 }
@@ -1746,6 +1757,7 @@ provider = "openai"
             theme_mode: ThemeMode::Light,
             right_panel_width: 612,
             right_panel_collapsed: true,
+            left_panel_width: 420,
             ..Default::default()
         };
         ui.save().unwrap();
@@ -1786,6 +1798,7 @@ provider = "openai"
         let ui: UiConfig = toml::from_str("theme_mode = \"system\"\n").unwrap();
         assert_eq!(ui.theme_mode, ThemeMode::System);
         assert_eq!(ui.right_panel_width, 320);
+        assert_eq!(ui.left_panel_width, 280);
         assert_eq!(ui.theme_dark, "catppuccin-mocha");
     }
 
@@ -1802,6 +1815,9 @@ provider = "openai"
         let mut narrow: UiConfig = toml::from_str("right_panel_width = 1\n").unwrap();
         narrow.clamp();
         assert_eq!(narrow.right_panel_width, MIN_PANEL_WIDTH);
+        let mut left: UiConfig = toml::from_str("left_panel_width = 4000000\n").unwrap();
+        left.clamp();
+        assert_eq!(left.left_panel_width, MAX_PANEL_WIDTH);
     }
 
     /// A negative width must not be able to break the whole prefs file.

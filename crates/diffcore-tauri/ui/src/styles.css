@@ -1611,6 +1611,22 @@ body {
 
 /* grid-template-rows 1fr↔0fr animates to real content height smoothly, unlike
    max-height which stalls then snaps when the upper bound doesn't match. */
+.group-expand-toggle {
+  background: none;
+  border: none;
+  padding: 0 2px;
+  margin-right: 2px;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.group-expand-toggle:hover {
+  color: var(--accent);
+}
+
 .file-list-wrapper {
   display: grid;
   grid-template-rows: 1fr;
