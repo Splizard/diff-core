@@ -382,6 +382,8 @@ export default function App() {
         saveThemePrefs(prefs);
         setRightPanelWidth(clampPanelWidth(ui.right_panel_width));
         setRightPanelCollapsed(ui.right_panel_collapsed);
+        // Older ui.toml files predate this field.
+        setLeftPanelWidth(clampPanelWidth(ui.left_panel_width ?? 280));
       })
       .catch((e) => {
         console.warn("Failed to load UI settings; using local defaults", e);
@@ -467,10 +469,28 @@ export default function App() {
   );
   const [rightPanelWidth, setRightPanelWidth] = useState(320);
   const rightPanelDragging = useRef(false);
-  const rightPanelStartX = useRef(0);
-  const rightPanelStartWidth = useRef(0);
-  const rightPanelRafId = useRef(0);
+  const dragStartX = useRef(0);
+  const dragStartWidth = useRef(0);
+  const dragRafId = useRef(0);
   const rightPanelLatestWidth = useRef(320);
+
+  // Left (flow groups) panel resize state. Shares the drag refs and window
+  // listeners with the right panel; `leftPanelDragging` says which is moving.
+  const [leftPanelWidth, setLeftPanelWidth] = useState(280);
+  const leftPanelDragging = useRef(false);
+  const leftPanelLatestWidth = useRef(280);
+
+  // Group file lists start collapsed so a big PR reads as a list of group
+  // headers; a group expands when selected or via its chevron.
+  const [expandedGroupIds, setExpandedGroupIds] = useState<Set<string>>(new Set());
+  const toggleGroupExpanded = useCallback((groupId: string) => {
+    setExpandedGroupIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(groupId)) next.delete(groupId);
+      else next.add(groupId);
+      return next;
+    });
+  }, []);
 
   // Groups manifest watching state
   const [watchedManifestPath, setWatchedManifestPath] = useState<string | null>(null);
@@ -484,20 +504,37 @@ export default function App() {
   // Right panel drag resize handlers (rAF-throttled to prevent jank)
   useEffect(() => {
     const onMouseMove = (e: MouseEvent) => {
-      if (!rightPanelDragging.current) return;
+      const left = leftPanelDragging.current;
+      if (!rightPanelDragging.current && !left) return;
       const clientX = e.clientX;
-      cancelAnimationFrame(rightPanelRafId.current);
-      rightPanelRafId.current = requestAnimationFrame(() => {
-        const delta = rightPanelStartX.current - clientX;
-        const newWidth = clampPanelWidth(rightPanelStartWidth.current + delta);
-        rightPanelLatestWidth.current = newWidth;
-        setRightPanelWidth(newWidth);
+      cancelAnimationFrame(dragRafId.current);
+      dragRafId.current = requestAnimationFrame(() => {
+        // The left panel grows as the handle moves right; the right panel
+        // grows as it moves left.
+        const delta = left
+          ? clientX - dragStartX.current
+          : dragStartX.current - clientX;
+        const newWidth = clampPanelWidth(dragStartWidth.current + delta);
+        if (left) {
+          leftPanelLatestWidth.current = newWidth;
+          setLeftPanelWidth(newWidth);
+        } else {
+          rightPanelLatestWidth.current = newWidth;
+          setRightPanelWidth(newWidth);
+        }
       });
     };
     const onMouseUp = () => {
+      if (leftPanelDragging.current) {
+        leftPanelDragging.current = false;
+        cancelAnimationFrame(dragRafId.current);
+        document.body.style.cursor = "";
+        document.body.style.userSelect = "";
+        persistUiSettings({ left_panel_width: leftPanelLatestWidth.current });
+      }
       if (rightPanelDragging.current) {
         rightPanelDragging.current = false;
-        cancelAnimationFrame(rightPanelRafId.current);
+        cancelAnimationFrame(dragRafId.current);
         document.body.style.cursor = "";
         document.body.style.userSelect = "";
         document.querySelector(".panel-right")?.classList.remove("panel-right-dragging");
@@ -515,13 +552,23 @@ export default function App() {
   const startRightPanelDrag = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
     rightPanelDragging.current = true;
-    rightPanelStartX.current = e.clientX;
-    rightPanelStartWidth.current = rightPanelWidth;
+    dragStartX.current = e.clientX;
+    dragStartWidth.current = rightPanelWidth;
     rightPanelLatestWidth.current = rightPanelWidth;
     document.body.style.cursor = "col-resize";
     document.body.style.userSelect = "none";
     document.querySelector(".panel-right")?.classList.add("panel-right-dragging");
   }, [rightPanelWidth]);
+
+  const startLeftPanelDrag = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    leftPanelDragging.current = true;
+    dragStartX.current = e.clientX;
+    dragStartWidth.current = leftPanelWidth;
+    leftPanelLatestWidth.current = leftPanelWidth;
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+  }, [leftPanelWidth]);
 
   // Demo mode: auto-load mock data on mount when not in Tauri
   const demoLoaded = useRef(false);
@@ -1049,6 +1096,7 @@ export default function App() {
       // Cancel any pending debounced file nav from the previous group
       if (pendingFileNav.current) clearTimeout(pendingFileNav.current);
       setSelectedGroup(group);
+      setExpandedGroupIds((prev) => (prev.has(group.id) ? prev : new Set(prev).add(group.id)));
       // Picking a group is a request to read that group, not the PR blurb.
       setShowPrOverview(false);
       // Exit replay mode when switching groups
@@ -1697,6 +1745,13 @@ export default function App() {
         next.delete(groupId);
       } else {
         next.add(groupId);
+        // Finishing a group folds it away, as before collapse-by-default.
+        setExpandedGroupIds((exp) => {
+          if (!exp.has(groupId)) return exp;
+          const e = new Set(exp);
+          e.delete(groupId);
+          return e;
+        });
       }
       return next;
     });
@@ -3647,7 +3702,7 @@ export default function App() {
       {/* Three-panel layout */}
       <div className="panels">
         {/* Left panel: Flow Groups */}
-        <aside className="panel panel-left">
+        <aside className="panel panel-left" style={{ width: leftPanelWidth }}>
           <div className="panel-header">
             <span>Flow Groups</span>
             {comments.length > 0 && (
@@ -3734,6 +3789,19 @@ export default function App() {
                     onClick={() => handleSelectGroup(group)}
                   >
                     <div className="group-header">
+                      {!isEmpty && (
+                        <button
+                          className="group-expand-toggle"
+                          aria-expanded={expandedGroupIds.has(group.id)}
+                          title={expandedGroupIds.has(group.id) ? "Collapse files" : "Expand files"}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            toggleGroupExpanded(group.id);
+                          }}
+                        >
+                          {expandedGroupIds.has(group.id) ? "\u25BE" : "\u25B8"}
+                        </button>
+                      )}
                       <span
                         className={`group-review-check ${reviewedGroupIds.has(group.id) ? "checked" : ""}`}
                         title={reviewedGroupIds.has(group.id) ? "Mark as unreviewed" : "Mark as reviewed"}
@@ -3806,7 +3874,7 @@ export default function App() {
                         )}
                       </div>
                     )}
-                    <div className={`file-list-wrapper ${reviewedGroupIds.has(group.id) ? "file-list-wrapper-collapsed" : ""}`}>
+                    <div className={`file-list-wrapper ${expandedGroupIds.has(group.id) ? "" : "file-list-wrapper-collapsed"}`}>
                       <ul className="file-list">
                         {group.files.map((file) => {
                           const fileCommentCount = commentsForFile(file.path).length;
@@ -3990,6 +4058,12 @@ export default function App() {
             </div>
           )}
         </aside>
+
+        {/* Left panel drag handle */}
+        <div
+          className="panel-resize-handle"
+          onMouseDown={startLeftPanelDrag}
+        />
 
         {/* Center panel: Monaco Diff Viewer */}
         <main className="panel panel-center">

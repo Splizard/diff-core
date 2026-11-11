@@ -246,6 +246,7 @@ export interface UiConfig {
   theme_dark: string;
   right_panel_width: number;
   right_panel_collapsed: boolean;
+  left_panel_width: number;
 }
 
 export interface AsyncLlmJobStart {
