@@ -46,17 +46,14 @@ test.describe("AI activity stream", () => {
     await expect(page.getByRole("button", { name: "Copy PR Description" })).toBeVisible();
   });
 
-  test("prefers Codex CLI over direct API settings for refinement when a local backend is ready", async ({ page }) => {
+  test("prefers Codex CLI over direct API settings for deep analysis when a local backend is ready", async ({ page }) => {
     await setLlmSettings(page, {
       annotations_enabled: true,
-      refinement_enabled: true,
       metadata_enabled: false,
       provider: "openai",
       model: "gpt-5.4",
       api_key_source: "~/.diffcore/config.toml",
       has_api_key: true,
-      refinement_provider: "openai",
-      refinement_model: "gpt-5.4",
       global_config_path: "~/.config/diffcore/config.toml",
       api_key_in_config: false,
       codex_available: true,
@@ -65,22 +62,17 @@ test.describe("AI activity stream", () => {
       claude_authenticated: true,
     });
 
-    await page.getByRole("button", { name: "Refine" }).click();
+    await page.getByRole("button", { name: "Analyze This Flow" }).click();
 
     const panel = page.getByTestId("activity-panel");
     const log = page.getByTestId("activity-log");
 
     await expect(panel).toBeVisible();
-    await expect(panel).toContainText("Refining groups");
     await expect(panel).toContainText("Codex CLI/default");
     await expect(panel).toContainText("Live repo activity enabled");
-    await expect(log).toContainText("Preparing refinement request");
+    await expect(log).toContainText("Preparing deep analysis request");
     await expect(log).toContainText("Searching the repo");
     await expect(log).toContainText("Reading files");
-    await expect(log).toContainText("Refinement rationale");
-    await expect(panel).toContainText("Applied structural changes");
-    await expect(panel).not.toContainText("Refinement finished without structural changes");
-    await expect(page.getByRole("button", { name: "Refined" })).toBeVisible();
     await expect(panel.locator(".activity-live-badge")).toHaveText("Saved");
     await page.getByTestId("annotations-tab").click();
     await expect(page.locator(".llm-provider-badge")).toContainText("Codex CLI/default");
@@ -89,14 +81,11 @@ test.describe("AI activity stream", () => {
   test("explains when a direct API provider cannot show file reads or grep activity", async ({ page }) => {
     await setLlmSettings(page, {
       annotations_enabled: true,
-      refinement_enabled: true,
       metadata_enabled: false,
       provider: "openai",
       model: "gpt-5.4",
       api_key_source: "~/.diffcore/config.toml",
       has_api_key: true,
-      refinement_provider: "openai",
-      refinement_model: "gpt-5.4",
       global_config_path: "~/.config/diffcore/config.toml",
       api_key_in_config: false,
       codex_available: false,
@@ -145,9 +134,9 @@ test.describe("AI activity stream", () => {
       {
         source: "diffcore",
         level: "info",
-        message: "Preparing refinement request",
+        message: "Preparing deep analysis request",
         event_type: "diffcore.prepare",
-        payload: { operation: "refinement", stage: "prepare" },
+        payload: { operation: "group", stage: "prepare" },
         timestamp_ms: base,
       },
       {
@@ -193,7 +182,7 @@ test.describe("AI activity stream", () => {
       {
         source: "diffcore",
         level: "info",
-        message: "Preparing refinement request",
+        message: "Preparing deep analysis request",
         event_type: "diffcore.prepare",
         timestamp_ms: base,
       },
@@ -221,8 +210,8 @@ test.describe("AI activity stream", () => {
       {
         source: "codex",
         level: "info",
-        message: "Refinement rationale: keep the current grouping because the changed files already form coherent review flows.",
-        event_type: "refinement.reasoning",
+        message: "Cross-cutting concern: the rate limiter keys on req.ip, which may be the load balancer address behind a reverse proxy.",
+        event_type: "provider.cross_cutting",
         timestamp_ms: base + 4,
       },
     ]);
@@ -230,8 +219,8 @@ test.describe("AI activity stream", () => {
     await page.getByTestId("activity-entry").last().click();
     const cards = page.getByTestId("activity-entry");
     await expect(cards).toHaveCount(5);
-    await expect(cards.first()).toContainText("Preparing refinement request");
-    await expect(cards.last()).toContainText("Refinement rationale");
+    await expect(cards.first()).toContainText("Preparing deep analysis request");
+    await expect(cards.last()).toContainText("Cross-cutting concern");
 
     // compact cards: not collapsed, not clipping (overflow: hidden)
     const metrics = await cards.evaluateAll((elements) =>
@@ -246,14 +235,11 @@ test.describe("AI activity stream", () => {
   test("surfaces the effective Codex backend in Settings when local auth is available", async ({ page }) => {
     await setLlmSettings(page, {
       annotations_enabled: true,
-      refinement_enabled: true,
       metadata_enabled: false,
       provider: "openai",
       model: "gpt-5.4",
       api_key_source: "~/.diffcore/config.toml",
       has_api_key: true,
-      refinement_provider: "openai",
-      refinement_model: "gpt-5.4",
       global_config_path: "~/.config/diffcore/config.toml",
       api_key_in_config: false,
       codex_available: true,
@@ -266,7 +252,6 @@ test.describe("AI activity stream", () => {
 
     const panel = page.locator(".settings-panel");
     await expect(panel).toContainText("Effective summary backend on this machine: Codex CLI/default");
-    await expect(panel).toContainText("Effective refinement backend on this machine: Codex CLI/default");
     await expect(panel).toContainText("Diffcore will prefer Codex CLI for live jobs on this machine");
   });
 });

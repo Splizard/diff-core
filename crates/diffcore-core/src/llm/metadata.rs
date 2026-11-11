@@ -1,10 +1,9 @@
 //! LLM group metadata pass — fills in the review metadata carried on each group.
 //!
-//! Consumes the *final* groups, after any refinement ops have been applied, and
-//! asks an LLM "how should I review this group" rather than "what changed". The
-//! answer lands on the `FlowGroup` itself: type, risk band, impact scope, review
-//! complexity, review focus, a one-line description, and the invariant a reviewer
-//! should verify.
+//! Consumes the *final* groups and asks an LLM "how should I review this group"
+//! rather than "what changed". The answer lands on the `FlowGroup` itself: type,
+//! risk band, impact scope, review complexity, review focus, a one-line
+//! description, and the invariant a reviewer should verify.
 //!
 //! `risk_score` is never written — it drives review ranking and stays
 //! deterministic. See `specs/group-metadata.md`.
@@ -644,12 +643,6 @@ mod tests {
         ) -> Result<crate::llm::schema::JudgeResponse, LlmError> {
             unimplemented!()
         }
-        async fn refine_groups(
-            &self,
-            _: &crate::llm::schema::RefinementRequest,
-        ) -> Result<crate::llm::schema::RefinementResponse, LlmError> {
-            unimplemented!()
-        }
         async fn describe_groups(
             &self,
             request: &crate::llm::schema::MetadataRequest,
@@ -772,12 +765,6 @@ mod tests {
             &self,
             _: &crate::llm::schema::JudgeRequest,
         ) -> Result<crate::llm::schema::JudgeResponse, LlmError> {
-            unimplemented!()
-        }
-        async fn refine_groups(
-            &self,
-            _: &crate::llm::schema::RefinementRequest,
-        ) -> Result<crate::llm::schema::RefinementResponse, LlmError> {
             unimplemented!()
         }
     }

@@ -16,14 +16,11 @@ async function setLlmSettings(page: Page, settings: Record<string, unknown>) {
 function baseMissingSettings(overrides: Record<string, unknown> = {}) {
   return {
     annotations_enabled: false,
-    refinement_enabled: false,
     metadata_enabled: false,
     provider: "openai",
     model: "gpt-5.4",
     api_key_source: "none",
     has_api_key: false,
-    refinement_provider: "openai",
-    refinement_model: "gpt-5.4",
     global_config_path: "~/.config/diffcore/config.toml",
     api_key_in_config: false,
     codex_available: false,

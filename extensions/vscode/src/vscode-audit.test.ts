@@ -157,18 +157,15 @@ describe("CLI error detection", () => {
       base: "main",
       head: "feat",
       annotate: true,
-      refine: true,
     });
-    // --repo before --base before --head, then --annotate, --refine
+    // --repo before --base before --head, then --annotate
     const repoIdx = args.indexOf("--repo");
     const baseIdx = args.indexOf("--base");
     const headIdx = args.indexOf("--head");
     const annotateIdx = args.indexOf("--annotate");
-    const refineIdx = args.indexOf("--refine");
     expect(repoIdx).toBeLessThan(baseIdx);
     expect(baseIdx).toBeLessThan(headIdx);
     expect(headIdx).toBeLessThan(annotateIdx);
-    expect(annotateIdx).toBeLessThan(refineIdx);
   });
 });
 

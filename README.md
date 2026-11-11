@@ -1,4 +1,10 @@
-# Diffcore
+# Diffcore (Splizard fork)
+
+> This is the Splizard fork of [jamesaphoenix/diff-core](https://github.com/jamesaphoenix/diff-core),
+> trimmed for internal use: the desktop app's **auto-updater** and the
+> **LLM refinement** pass are removed. The app never downloads or installs
+> updates on its own, and no LLM is ever asked to rewrite the review groups.
+> Upgrades happen only when this fork is rebuilt from reviewed source.
 
 **Semantic diff layer for code review.** Git gives you syntactic diffs. Diffcore adds meaning: what those changes *mean*, how they relate, and what order a human should read them in.
 
@@ -8,13 +14,13 @@ Built for the era of AI agents producing 50+ file PRs.
 
 ## How it Works
 
-Diffcore transforms flat file diffs into ranked, semantically grouped review flows through three layers:
+Diffcore transforms flat file diffs into ranked, semantically grouped review flows through two deterministic layers:
 
 **Structural analysis** (free, deterministic) builds a symbol graph from tree-sitter ASTs, detects entrypoints (HTTP routes, CLI commands, queue consumers, Effect.ts services), clusters changed files into flow groups via forward reachability, and traces data flow across call chains.
 
 **Heuristic scoring** (free, deterministic) provides framework detection (Express, Next.js, FastAPI, Effect.ts, 30+ frameworks), risk scoring, and review ordering by composite score combining risk, centrality, surface area, and uncertainty.
 
-**LLM refinement** (paid, optional) uses Anthropic, OpenAI, or Gemini to read the actual diff and refine groupings: split coincidental coupling, merge scattered refactors, and re-rank by semantic review order. An evaluator-optimizer loop keeps whichever version scores better.
+Optional LLM annotations (summaries and per-flow analysis) are still available, but they never change the groupings.
 
 ## Features
 
@@ -101,10 +107,6 @@ diffcore analyze --base main -o review.json
 # With LLM annotations (overview summary)
 diffcore analyze --base main --annotate
 
-# With LLM refinement of groupings
-diffcore analyze --base main --refine
-diffcore analyze --base main --refine --refine-model gpt-4o
-
 # Analyze a different repo
 diffcore analyze --base main --repo /path/to/repo
 
@@ -163,11 +165,6 @@ Example global config:
 ```toml
 [llm]
 provider = "codex"   # "codex", "claude", "anthropic", "openai", or "gemini"
-model = "default"
-
-[llm.refinement]
-enabled = true
-provider = "claude"
 model = "default"
 ```
 

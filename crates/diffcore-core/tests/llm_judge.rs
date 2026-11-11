@@ -31,7 +31,7 @@ use diffcore_core::llm::judge::{
 };
 use diffcore_core::llm::schema::{
     JudgeCriterionScore, JudgeRequest, JudgeResponse, Pass1Request, Pass1Response, Pass2Request,
-    Pass2Response, RefinementRequest, RefinementResponse,
+    Pass2Response,
 };
 use diffcore_core::llm::vcr::{VcrMode, VcrProvider};
 use diffcore_core::llm::{LlmError, LlmProvider};
@@ -89,10 +89,6 @@ impl LlmProvider for MockJudgeProvider {
             failure_explanations: vec![],
             strengths: vec!["Good grouping".to_string(), "Clear flow".to_string()],
         })
-    }
-
-    async fn refine_groups(&self, _: &RefinementRequest) -> Result<RefinementResponse, LlmError> {
-        unimplemented!("Mock judge provider only supports evaluate_quality")
     }
 }
 

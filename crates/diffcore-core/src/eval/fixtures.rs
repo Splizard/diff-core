@@ -97,10 +97,10 @@ impl RepoBuilder {
     /// Stage all changes and commit with a message. Returns the commit OID.
     ///
     /// Uses a fixed Unix-epoch timestamp so commit SHAs are reproducible
-    /// across test runs. This is required for VCR cassette caching in
-    /// integration tests like `adversarial_refinement` — without it, every
-    /// run produces a fresh `analysis_json` (which embeds the SHAs) and the
-    /// cache key never hits.
+    /// across test runs. This keeps VCR cassette cache keys stable for
+    /// integration tests whose LLM requests embed analysis output (and so the
+    /// SHAs) — without it, every run produces fresh SHAs and the cache key
+    /// never hits.
     pub fn commit(&self, message: &str) -> git2::Oid {
         let mut index = self.repo.index().unwrap();
         index

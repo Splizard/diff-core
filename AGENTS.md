@@ -8,7 +8,7 @@ Three levels of semantics, each building on the last:
 
 1. **Structural** (free, deterministic) — builds a symbol graph from tree-sitter ASTs, detects entrypoints (HTTP routes, CLI commands, queue consumers, Effect.ts services, etc.), clusters changed files into flow groups via forward reachability, traces data flow across call chains.
 2. **Heuristic** (free, deterministic) — framework detection (Express, Next.js, FastAPI, Effect.ts, 30+ frameworks), risk scoring, review ordering by composite score (risk/centrality/surface-area/uncertainty).
-3. **LLM refinement** (paid, optional) — Anthropic, OpenAI, or Gemini reads the actual diff content and refines groupings: split coincidental coupling, merge scattered refactors, re-rank by semantic review order, reclassify misplaced files. Applied as structural patch operations over the deterministic grouping; on failure the deterministic groups are kept unchanged.
+3. ~~LLM refinement~~ — **removed in the Splizard fork.** Do not reintroduce an LLM pass that rewrites groupings, and do not reintroduce the auto-updater.
 
 ## Target Grouping Strategy
 
@@ -16,15 +16,14 @@ Diffcore is intentionally a hybrid system. The target architecture is not "heuri
 
 1. **Structural + heuristic prior** — deterministic graph extraction, entrypoint detection, reachability, framework cues, and file-role heuristics produce the strongest cheap baseline possible.
 2. **ML grouping layer** — a learned model trained on the growing golden eval corpus scores pairwise or file-to-group relationships and proposes better initial groupings than heuristics alone.
-3. **LLM repair pass** — an optional, bounded refinement layer applies semantic patches on top of the deterministic/ML proposal for the ambiguous cases the cheaper layers still miss.
 
-The intended end state is a mixture of heuristics, ML, and LLMs: heuristics for hard signals and reproducibility, ML for learned grouping patterns at scale, and LLMs for expensive edge-case cleanup.
+In this fork the upstream "LLM repair pass" is intentionally removed: groupings come only from the deterministic and ML layers. LLMs may annotate, never regroup.
 
 ## Agent Guidance
 
 - Keep the deterministic structural and heuristic layers as the foundation.
 - Add learned behavior on top of those signals, not instead of them.
-- Preferred pipeline: structural/heuristic feature extraction -> ML grouping/scoring -> optional LLM refinement -> golden eval.
+- Preferred pipeline: structural/heuristic feature extraction -> ML grouping/scoring -> golden eval.
 - Do not propose an end-to-end LLM grouper as the primary architecture.
 - Train ML components against the pinned golden eval corpus.
 - Split train/validation/test by repository to avoid leakage.
@@ -49,7 +48,7 @@ Large-diff work is a separate evaluation track, not part of the default live-rep
 ## Architecture
 
 - **Rust core** (`diffcore-core`) — all analysis logic. Shared IR maps tree-sitter ASTs from any language into language-agnostic types via declarative `.scm` query files. Adding a new language = writing `.scm` files, zero Rust code.
-- **CLI** (`diffcore-cli`) — `diffcore analyze --base main`, JSON output, `--refine` for LLM refinement, `--annotate` for LLM narration.
+- **CLI** (`diffcore-cli`) — `diffcore analyze --base main`, JSON output, `--annotate` for LLM narration.
 - **Tauri desktop app** — three-panel UI: flow groups | Monaco diff viewer | annotations/Mermaid graph. Keyboard-driven (j/k/J/K).
 - **VS Code extension** — thin shell over CLI. Tree view + native diff editor + webview annotations.
 
@@ -68,7 +67,7 @@ Large-diff work is a separate evaluation track, not part of the default live-rep
 - **VCR caching** — record/replay LLM calls for deterministic CI
 - **LLM-as-judge** — evaluator that scores analysis quality across 5 criteria
 - **Eval suite** — 5 synthetic fixture codebases, deterministic scoring, 0.89 avg score
-- **Config** — `.diffcore.toml` with entrypoint globs, layer names, ignore patterns, LLM settings, refinement settings; per-user config/cache/state resolved via XDG base dirs in `diffcore-core`'s `paths` module (`$XDG_CONFIG_HOME/diffcore/config.toml`, with `~/.diffcore/config.toml` as a read-only legacy fallback). Theme and panel preferences live in a separate `ui.toml` (`UiConfig`) so high-frequency UI writes never race the credential-bearing `config.toml`; review comments are user data and live under `$XDG_DATA_HOME/diffcore/comments/` with a read-fallback to the pre-XDG location
+- **Config** — `.diffcore.toml` with entrypoint globs, layer names, ignore patterns, LLM settings; per-user config/cache/state resolved via XDG base dirs in `diffcore-core`'s `paths` module (`$XDG_CONFIG_HOME/diffcore/config.toml`, with `~/.diffcore/config.toml` as a read-only legacy fallback). Theme and panel preferences live in a separate `ui.toml` (`UiConfig`) so high-frequency UI writes never race the credential-bearing `config.toml`; review comments are user data and live under `$XDG_DATA_HOME/diffcore/comments/` with a read-fallback to the pre-XDG location
 - **Logging** — `tracing` + `tracing-subscriber` behind `diffcore-core`'s `logging` feature; `RUST_LOG` sets the filter (default `info`), `DIFFCORE_LOG_FORMAT=json` switches to line-delimited JSON, `DIFFCORE_LOG_FILE` redirects to a file (the desktop app falls back to `$XDG_STATE_HOME/diffcore/desktop.log` when stderr is not a terminal, since GUI bundles discard it). Backend activity logs on the `activity` target, IR cache on `ir_cache`. `log`-crate call sites bridge in automatically.
 
 ## Tests

@@ -23,7 +23,6 @@ use diffcore_core::flow::{self, FlowConfig};
 use diffcore_core::git;
 use diffcore_core::graph::SymbolGraph;
 use diffcore_core::llm;
-use diffcore_core::llm::refinement;
 use diffcore_core::output::{self, build_analysis_output};
 use diffcore_core::pipeline;
 use diffcore_core::pr_url;
@@ -103,14 +102,6 @@ struct AnalyzeArgs {
     /// Enable the LLM group metadata pass (description, risk, impact, invariant, ...)
     #[arg(long)]
     describe: bool,
-
-    /// Enable LLM refinement pass (overrides config)
-    #[arg(long)]
-    refine: bool,
-
-    /// Model for refinement pass (e.g., "gpt-4.1", "claude-sonnet-4-6")
-    #[arg(long)]
-    refine_model: Option<String>,
 
     /// Disable disk-persistent IR parse cache
     #[arg(long)]
@@ -472,15 +463,6 @@ fn run_analyze(mut args: AnalyzeArgs) -> Result<(), Box<dyn std::error::Error>> 
         );
     }
 
-    // Apply CLI overrides for refinement
-    if args.refine {
-        config.llm.refinement.enabled = true;
-    }
-    if let Some(ref model) = args.refine_model {
-        config.llm.refinement.enabled = true;
-        config.llm.refinement.model = Some(model.clone());
-    }
-
     // Resolve include_uncommitted: CLI flag > config > default (true)
     let include_uncommitted = if args.include_uncommitted {
         true
@@ -510,16 +492,11 @@ fn run_analyze(mut args: AnalyzeArgs) -> Result<(), Box<dyn std::error::Error>> 
         return write_output(&empty_output, args.output.as_deref());
     }
 
-    // Check cache (skip if LLM annotation or refinement requested — those are additive,
+    // Check cache (skip if LLM annotation or metadata requested — those are additive,
     // or if --no-cache was passed). Cache key incorporates ignore patterns so any
     // ignore-config change (incl. auto-detected subtrees) invalidates the entry.
     let cache_key = cache::compute_cache_key(&diff_result, &config.ignore.paths);
-    if !args.annotate
-        && !args.refine
-        && !args.describe
-        && args.refine_model.is_none()
-        && !args.no_cache
-    {
+    if !args.annotate && !args.describe && !args.no_cache {
         if let Some(cached) = cache::load_cached(&workdir, &cache_key) {
             return write_output(&cached, args.output.as_deref());
         }
@@ -596,20 +573,8 @@ fn run_analyze(mut args: AnalyzeArgs) -> Result<(), Box<dyn std::error::Error>> 
     // Cache the deterministic analysis result (before LLM steps)
     cache::store_cached(&workdir, &cache_key, &analysis_output);
 
-    // Apply LLM refinement if enabled
-    if config.llm.refinement.enabled {
-        let rt = tokio::runtime::Runtime::new()?;
-        match rt.block_on(run_refinement(&config, &workdir, &mut analysis_output)) {
-            Ok(()) => {}
-            Err(e) => {
-                warn!("LLM refinement failed, using deterministic groups: {}", e);
-            }
-        }
-    }
-
-    // Refinement rewrites group composition without re-scoring, so the ranking
-    // score and the heuristic metadata derived from it are both stale by here.
-    // Both have to be recomputed before the metadata pass runs on top.
+    // Recompute risk scores from the final group files and refresh the heuristic
+    // metadata derived from them before the metadata pass runs on top.
     rank::rescore_groups(&mut analysis_output.groups, &file_centrality, &weights);
     diffcore_core::group_metadata::apply_heuristic_metadata(&mut analysis_output.groups);
 
@@ -708,78 +673,6 @@ fn extract_diff(
             Ok((selected.diff, source))
         }
     }
-}
-
-async fn run_refinement(
-    config: &DiffcoreConfig,
-    workdir: &std::path::Path,
-    analysis_output: &mut AnalysisOutput,
-) -> Result<(), Box<dyn std::error::Error>> {
-    // Build a LlmConfig for the refinement provider
-    let refinement_llm_config = diffcore_core::config::LlmConfig {
-        provider: config
-            .llm
-            .refinement
-            .provider
-            .clone()
-            .or_else(|| config.llm.provider.clone()),
-        model: config
-            .llm
-            .refinement
-            .model
-            .clone()
-            .or_else(|| config.llm.model.clone()),
-        key_cmd: config
-            .llm
-            .refinement
-            .key_cmd
-            .clone()
-            .or_else(|| config.llm.key_cmd.clone()),
-        key: config.llm.key.clone(),
-        ..Default::default()
-    };
-
-    let provider = llm::create_provider_for_workdir(&refinement_llm_config, Some(workdir))?;
-
-    // Build refinement request
-    let analysis_json = serde_json::to_string_pretty(analysis_output)?;
-    let diff_summary = format!(
-        "{} files changed across {} groups",
-        analysis_output.summary.total_files_changed, analysis_output.summary.total_groups,
-    );
-
-    let request = refinement::build_refinement_request(
-        &analysis_output.groups,
-        analysis_output.infrastructure_group.as_ref(),
-        &analysis_json,
-        &diff_summary,
-    );
-
-    // Call LLM for refinement
-    let response = provider.refine_groups(&request).await?;
-
-    if !refinement::has_refinements(&response) {
-        return Ok(());
-    }
-
-    // Apply refinement leniently — repair LLM-hallucinated IDs via name
-    // matching and drop any ops we can't repair instead of aborting the
-    // entire refinement on a single bad reference.
-    let (refined_groups, refined_infra, warnings) = refinement::apply_refinement_lenient(
-        &analysis_output.groups,
-        analysis_output.infrastructure_group.as_ref(),
-        &response,
-    );
-
-    for w in &warnings {
-        warn!(target: "refinement", "repair: {}", w.message);
-    }
-
-    analysis_output.groups = refined_groups;
-    analysis_output.infrastructure_group = refined_infra;
-    analysis_output.summary.total_groups = analysis_output.groups.len() as u32;
-
-    Ok(())
 }
 
 async fn run_metadata(
@@ -1216,8 +1109,6 @@ fn run_export_groups(args: ExportGroupsArgs) -> Result<(), Box<dyn std::error::E
             output: None,
             annotate: false,
             describe: false,
-            refine: false,
-            refine_model: None,
             no_cache: false,
             repo: args.repo.clone(),
         };
@@ -1259,8 +1150,6 @@ fn run_import_groups(args: ImportGroupsArgs) -> Result<(), Box<dyn std::error::E
         output: None,
         annotate: false,
         describe: false,
-        refine: false,
-        refine_model: None,
         no_cache: false,
         repo: args.repo.clone(),
     };
@@ -1294,8 +1183,6 @@ mod tests {
         if let Commands::Analyze(args) = cli.command {
             assert_eq!(args.base, Some("main".to_string()));
             assert_eq!(args.head, Some("feature".to_string()));
-            assert!(!args.refine);
-            assert!(args.refine_model.is_none());
         } else {
             panic!("expected Analyze command");
         }
@@ -1336,49 +1223,12 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_analyze_refine() {
-        let cli = Cli::parse_from(["diffcore", "analyze", "--base", "main", "--refine"]);
-        if let Commands::Analyze(args) = cli.command {
-            assert!(args.refine);
-            assert!(args.refine_model.is_none());
-        } else {
-            panic!("expected Analyze command");
-        }
-    }
-
-    #[test]
-    fn test_parse_analyze_refine_model() {
-        let cli = Cli::parse_from([
-            "diffcore",
-            "analyze",
-            "--base",
-            "main",
-            "--refine",
-            "--refine-model",
-            "gpt-4.1",
-        ]);
-        if let Commands::Analyze(args) = cli.command {
-            assert!(args.refine);
-            assert_eq!(args.refine_model, Some("gpt-4.1".to_string()));
-        } else {
-            panic!("expected Analyze command");
-        }
-    }
-
-    #[test]
-    fn test_parse_analyze_refine_model_implies_refine() {
-        let cli = Cli::parse_from([
-            "diffcore",
-            "analyze",
-            "--base",
-            "main",
-            "--refine-model",
-            "claude-sonnet-4-6",
-        ]);
-        if let Commands::Analyze(args) = cli.command {
-            assert_eq!(args.refine_model, Some("claude-sonnet-4-6".to_string()));
-        } else {
-            panic!("expected Analyze command");
+    fn test_parse_analyze_refine_flags_removed() {
+        // The LLM refinement pass was removed; its flags must not parse.
+        for flag in [&["--refine"][..], &["--refine-model", "gpt-4.1"][..]] {
+            let mut argv = vec!["diffcore", "analyze", "--base", "main"];
+            argv.extend_from_slice(flag);
+            assert!(Cli::try_parse_from(argv).is_err(), "{flag:?} should be rejected");
         }
     }
 
@@ -1408,26 +1258,7 @@ mod tests {
         let cli = Cli::parse_from(["diffcore", "analyze", "--base", "main", "--describe"]);
         if let Commands::Analyze(args) = cli.command {
             assert!(args.describe);
-            assert!(!args.refine, "--describe must not imply --refine");
             assert!(!args.annotate, "--describe must not imply --annotate");
-        } else {
-            panic!("expected Analyze command");
-        }
-    }
-
-    #[test]
-    fn test_parse_analyze_describe_with_refine() {
-        let cli = Cli::parse_from([
-            "diffcore",
-            "analyze",
-            "--base",
-            "main",
-            "--refine",
-            "--describe",
-        ]);
-        if let Commands::Analyze(args) = cli.command {
-            assert!(args.describe);
-            assert!(args.refine);
         } else {
             panic!("expected Analyze command");
         }
@@ -1457,9 +1288,6 @@ mod tests {
             "feature",
             "--annotate",
             "--describe",
-            "--refine",
-            "--refine-model",
-            "gpt-4.1",
             "-o",
             "out.json",
             "--repo",
@@ -1470,8 +1298,6 @@ mod tests {
             assert_eq!(args.head, Some("feature".to_string()));
             assert!(args.annotate);
             assert!(args.describe);
-            assert!(args.refine);
-            assert_eq!(args.refine_model, Some("gpt-4.1".to_string()));
             assert_eq!(args.output, Some(PathBuf::from("out.json")));
             assert_eq!(args.repo, PathBuf::from("/tmp/myrepo"));
         } else {
@@ -1502,165 +1328,6 @@ mod tests {
         } else {
             panic!("expected Analyze command");
         }
-    }
-
-    // ── Config Override Tests ──
-
-    #[test]
-    fn test_refine_flag_overrides_config() {
-        let mut config = DiffcoreConfig::default();
-        assert!(config.llm.refinement.enabled);
-
-        // Even when starting from enabled, explicit flag should still work
-        let refine = true;
-        let refine_model: Option<String> = Some("gpt-4.1".to_string());
-
-        if refine {
-            config.llm.refinement.enabled = true;
-        }
-        if let Some(ref model) = refine_model {
-            config.llm.refinement.enabled = true;
-            config.llm.refinement.model = Some(model.clone());
-        }
-
-        assert!(config.llm.refinement.enabled);
-        assert_eq!(config.llm.refinement.model, Some("gpt-4.1".to_string()));
-    }
-
-    #[test]
-    fn test_refine_model_without_refine_enables_refinement() {
-        let mut config = DiffcoreConfig::default();
-        // Disable first to test that --refine-model alone re-enables
-        config.llm.refinement.enabled = false;
-        assert!(!config.llm.refinement.enabled);
-
-        let refine_model: Option<String> = Some("claude-sonnet-4-6".to_string());
-        if let Some(ref model) = refine_model {
-            config.llm.refinement.enabled = true;
-            config.llm.refinement.model = Some(model.clone());
-        }
-
-        assert!(config.llm.refinement.enabled);
-        assert_eq!(
-            config.llm.refinement.model,
-            Some("claude-sonnet-4-6".to_string())
-        );
-    }
-
-    #[test]
-    fn test_refinement_llm_config_construction() {
-        let config = DiffcoreConfig {
-            llm: diffcore_core::config::LlmConfig {
-                provider: Some("anthropic".to_string()),
-                model: Some("claude-sonnet-4-6".to_string()),
-                key_cmd: Some("echo main-key".to_string()),
-                key: Some("main-inline-key".to_string()),
-                annotations_enabled: true,
-                refinement: diffcore_core::config::RefinementConfig {
-                    enabled: true,
-                    provider: Some("openai".to_string()),
-                    model: Some("gpt-4.1".to_string()),
-                    key_cmd: Some("echo refinement-key".to_string()),
-                },
-                metadata: Default::default(),
-            },
-            ..Default::default()
-        };
-
-        let refinement_llm_config = diffcore_core::config::LlmConfig {
-            provider: config
-                .llm
-                .refinement
-                .provider
-                .clone()
-                .or_else(|| config.llm.provider.clone()),
-            model: config
-                .llm
-                .refinement
-                .model
-                .clone()
-                .or_else(|| config.llm.model.clone()),
-            key_cmd: config
-                .llm
-                .refinement
-                .key_cmd
-                .clone()
-                .or_else(|| config.llm.key_cmd.clone()),
-            key: config.llm.key.clone(),
-            ..Default::default()
-        };
-
-        assert_eq!(refinement_llm_config.provider, Some("openai".to_string()));
-        assert_eq!(refinement_llm_config.model, Some("gpt-4.1".to_string()));
-        assert_eq!(
-            refinement_llm_config.key_cmd,
-            Some("echo refinement-key".to_string())
-        );
-        assert_eq!(
-            refinement_llm_config.key,
-            Some("main-inline-key".to_string())
-        );
-    }
-
-    #[test]
-    fn test_refinement_llm_config_falls_back_to_main() {
-        let config = DiffcoreConfig {
-            llm: diffcore_core::config::LlmConfig {
-                provider: Some("anthropic".to_string()),
-                model: Some("claude-sonnet-4-6".to_string()),
-                key_cmd: Some("echo main-key".to_string()),
-                key: Some("main-inline-key".to_string()),
-                annotations_enabled: true,
-                refinement: diffcore_core::config::RefinementConfig {
-                    enabled: true,
-                    provider: None,
-                    model: None,
-                    key_cmd: None,
-                },
-                metadata: Default::default(),
-            },
-            ..Default::default()
-        };
-
-        let refinement_llm_config = diffcore_core::config::LlmConfig {
-            provider: config
-                .llm
-                .refinement
-                .provider
-                .clone()
-                .or_else(|| config.llm.provider.clone()),
-            model: config
-                .llm
-                .refinement
-                .model
-                .clone()
-                .or_else(|| config.llm.model.clone()),
-            key_cmd: config
-                .llm
-                .refinement
-                .key_cmd
-                .clone()
-                .or_else(|| config.llm.key_cmd.clone()),
-            key: config.llm.key.clone(),
-            ..Default::default()
-        };
-
-        assert_eq!(
-            refinement_llm_config.provider,
-            Some("anthropic".to_string())
-        );
-        assert_eq!(
-            refinement_llm_config.model,
-            Some("claude-sonnet-4-6".to_string())
-        );
-        assert_eq!(
-            refinement_llm_config.key_cmd,
-            Some("echo main-key".to_string())
-        );
-        assert_eq!(
-            refinement_llm_config.key,
-            Some("main-inline-key".to_string())
-        );
     }
 
     // ── Write Output Tests ──

@@ -2,13 +2,11 @@
 //!
 //! Each `#[cfg_attr(feature = "desktop", tauri::command)]` function is callable from the frontend via `invoke()`.
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use log::warn;
-use tokio::task::JoinHandle;
 #[cfg(feature = "desktop")]
 use tauri::Emitter;
 #[cfg(feature = "desktop")]
@@ -25,8 +23,7 @@ use diffcore_core::flow::{self, FlowConfig};
 use diffcore_core::git;
 use diffcore_core::graph::SymbolGraph;
 use diffcore_core::llm;
-use diffcore_core::llm::refinement;
-use diffcore_core::llm::schema::{Pass1Response, Pass2Response, RefinementResponse};
+use diffcore_core::llm::schema::{Pass1Response, Pass2Response};
 use diffcore_core::output::{self, build_analysis_output};
 use diffcore_core::pipeline;
 use diffcore_core::pr_url;
@@ -36,26 +33,15 @@ use diffcore_core::types::AnalysisOutput;
 /// Application state shared across commands.
 pub struct AppState {
     /// The most recent analysis result, available for subsequent queries.
-    ///
-    /// `Arc` because the streaming refinement job persists its result from a
-    /// spawned `'static` task, which cannot borrow `State<'_, AppState>`.
-    pub last_analysis: Arc<Mutex<Option<AnalysisOutput>>>,
+    pub last_analysis: Mutex<Option<AnalysisOutput>>,
     /// Cached diff result from the most recent analysis, for instant file diff lookups.
     pub last_diff: Mutex<Option<CachedDiff>>,
     /// Background LLM job manager for live SSE activity streams.
     pub activity_manager: Arc<activity_stream::ActivityManager>,
     /// Base URL for the embedded localhost SSE server.
     pub activity_stream_base_url: Mutex<Option<String>>,
-    /// Cache key from the most recent analysis, for refinement cache lookups.
-    pub last_cache_key: Mutex<Option<String>>,
-    /// Per-file centrality from the most recent analysis. Refinement rewrites
-    /// group composition and has to re-score, which needs these; the symbol
-    /// graph they come from is gone by then.
-    pub last_file_centrality: Mutex<Option<HashMap<String, f64>>>,
     /// Path to the currently watched manifest file.
     pub watched_manifest_path: Mutex<Option<PathBuf>>,
-    /// In-flight refinement tasks keyed by job_id, so the user can cancel them.
-    pub refinement_jobs: Arc<Mutex<HashMap<String, JoinHandle<()>>>>,
     /// Generation counter for the git HEAD watcher: each `watch_git_head` call bumps this,
     /// and the polling thread exits once it sees a value that no longer matches its own,
     /// so switching repos or unwatching cleanly stops the previous thread.
@@ -72,14 +58,11 @@ pub struct CachedDiff {
 impl AppState {
     pub fn new() -> Self {
         Self {
-            last_analysis: Arc::new(Mutex::new(None)),
+            last_analysis: Mutex::new(None),
             last_diff: Mutex::new(None),
             activity_manager: Arc::new(activity_stream::ActivityManager::new()),
             activity_stream_base_url: Mutex::new(None),
-            last_cache_key: Mutex::new(None),
-            last_file_centrality: Mutex::new(None),
             watched_manifest_path: Mutex::new(None),
-            refinement_jobs: Arc::new(Mutex::new(HashMap::new())),
             git_head_watch_generation: Arc::new(AtomicU64::new(0)),
         }
     }
@@ -276,9 +259,6 @@ pub fn analyze(
                 e
             ),
         }
-        if let Ok(mut key) = state.last_cache_key.lock() {
-            *key = Some(cache_key);
-        }
         return Ok(cached);
     }
 
@@ -339,15 +319,6 @@ pub fn analyze(
 
     // Cache the deterministic analysis result
     cache::store_cached(&workdir, &cache_key, &analysis_output);
-
-    // Store cache key for refinement cache lookups
-    if let Ok(mut key) = state.last_cache_key.lock() {
-        *key = Some(cache_key);
-    }
-
-    if let Ok(mut centrality) = state.last_file_centrality.lock() {
-        *centrality = Some(file_centrality);
-    }
 
     // Store for subsequent queries
     match state.last_analysis.lock() {
@@ -660,73 +631,6 @@ async fn emit_direct_api_activity_notice(job: &JobHandle, provider: &str) {
     .await;
 }
 
-fn refinement_reasoning_excerpt(reasoning: &str) -> Option<String> {
-    let trimmed = reasoning.split_whitespace().collect::<Vec<_>>().join(" ");
-    if trimmed.is_empty() {
-        return None;
-    }
-
-    let sentence_end = trimmed.find(". ").map(|index| index + 1);
-    let excerpt = sentence_end
-        .map(|index| trimmed[..index].trim().to_string())
-        .unwrap_or_else(|| trimmed.chars().take(220).collect::<String>());
-
-    if excerpt.is_empty() {
-        None
-    } else if excerpt.chars().count() < trimmed.chars().count() && sentence_end.is_none() {
-        Some(format!("{}...", excerpt))
-    } else {
-        Some(excerpt)
-    }
-}
-
-fn refinement_operations_summary(response: &RefinementResponse) -> String {
-    let mut parts = Vec::new();
-
-    if !response.splits.is_empty() {
-        parts.push(format!(
-            "{} split{}",
-            response.splits.len(),
-            if response.splits.len() == 1 { "" } else { "s" }
-        ));
-    }
-    if !response.merges.is_empty() {
-        parts.push(format!(
-            "{} merge{}",
-            response.merges.len(),
-            if response.merges.len() == 1 { "" } else { "s" }
-        ));
-    }
-    if !response.re_ranks.is_empty() {
-        parts.push(format!(
-            "{} re-rank{}",
-            response.re_ranks.len(),
-            if response.re_ranks.len() == 1 {
-                ""
-            } else {
-                "s"
-            }
-        ));
-    }
-    if !response.reclassifications.is_empty() {
-        parts.push(format!(
-            "{} reclassification{}",
-            response.reclassifications.len(),
-            if response.reclassifications.len() == 1 {
-                ""
-            } else {
-                "s"
-            }
-        ));
-    }
-
-    if parts.is_empty() {
-        "no structural changes".to_string()
-    } else {
-        parts.join(", ")
-    }
-}
-
 async fn run_overview_with_activity(
     analysis: AnalysisOutput,
     llm_config: diffcore_core::config::LlmConfig,
@@ -776,139 +680,6 @@ async fn run_group_with_activity(
     })
     .await
     .map_err(|e| CommandError::Llm(format!("{}", e)))
-}
-
-/// Bring refined groups back into a consistent state.
-///
-/// `apply_refinement_lenient` rewrites group composition without re-scoring —
-/// merged groups come back at `risk_score: 0.0` — and the heuristic metadata
-/// derived from that score is stale for every group it touched. Both are
-/// recomputed here, before any LLM metadata pass runs on top.
-///
-/// Centrality needs the symbol graph, which is gone by refinement time, so it
-/// comes from `AppState::last_file_centrality`. Without it the scores would be
-/// wrong in a different way, so scoring is skipped rather than guessed.
-fn finalize_refined_groups(
-    groups: &mut [diffcore_core::types::FlowGroup],
-    file_centrality: Option<&HashMap<String, f64>>,
-    weights: &diffcore_core::types::RankWeights,
-) {
-    match file_centrality {
-        Some(centrality) => diffcore_core::rank::rescore_groups(groups, centrality, weights),
-        None => warn!("No cached centrality; refined groups keep their pre-refinement risk scores"),
-    }
-    diffcore_core::group_metadata::apply_heuristic_metadata(groups);
-}
-
-async fn run_refinement_with_activity(
-    analysis: AnalysisOutput,
-    refinement_llm_config: diffcore_core::config::LlmConfig,
-    workdir: Option<PathBuf>,
-    job: JobHandle,
-    file_centrality: Option<HashMap<String, f64>>,
-    weights: diffcore_core::types::RankWeights,
-) -> Result<RefinementResult, CommandError> {
-    emit_diffcore_activity(&job, "Preparing refinement request").await;
-    let provider = llm::create_provider_for_workdir(&refinement_llm_config, workdir.as_deref())
-        .map_err(|e| CommandError::Llm(format!("{}", e)))?;
-    let provider_name = provider.name().to_string();
-    let provider_model = provider.model().to_string();
-    emit_diffcore_activity(
-        &job,
-        format!("Using {} / {}", provider_name, provider_model),
-    )
-    .await;
-    emit_direct_api_activity_notice(&job, &provider_name).await;
-
-    let analysis_json = serde_json::to_string_pretty(&analysis)
-        .map_err(|e| CommandError::Llm(format!("Failed to serialize analysis: {}", e)))?;
-    let diff_summary = format!(
-        "{} files changed across {} groups",
-        analysis.summary.total_files_changed, analysis.summary.total_groups,
-    );
-    let request = refinement::build_refinement_request(
-        &analysis.groups,
-        analysis.infrastructure_group.as_ref(),
-        &analysis_json,
-        &diff_summary,
-    );
-
-    let response = llm::with_activity_callback(make_activity_callback(job.clone()), async {
-        provider.refine_groups(&request).await
-    })
-    .await
-    .map_err(|e| CommandError::Llm(format!("{}", e)))?;
-
-    if let Some(reasoning) = refinement_reasoning_excerpt(&response.reasoning) {
-        emit_logged_activity(
-            &job,
-            ActivityEntry::info(
-                provider_name.clone(),
-                format!("Refinement rationale: {}", reasoning),
-                Some("refinement.reasoning".to_string()),
-            ),
-        )
-        .await;
-    }
-
-    let provider_name = refinement_llm_config
-        .provider
-        .clone()
-        .unwrap_or_else(|| "anthropic".to_string());
-    let model_name = refinement_llm_config
-        .model
-        .clone()
-        .unwrap_or_else(|| default_model_for_provider(&provider_name).to_string());
-
-    if !refinement::has_refinements(&response) {
-        emit_diffcore_activity(&job, "Refinement kept the current grouping").await;
-        return Ok(RefinementResult {
-            refined_groups: analysis.groups.clone(),
-            infrastructure_group: analysis.infrastructure_group.clone(),
-            refinement_response: response,
-            provider: provider_name,
-            model: model_name,
-            had_changes: false,
-            warnings: Vec::new(),
-        });
-    }
-
-    let (mut refined_groups, infra, warnings) = refinement::apply_refinement_lenient(
-        &analysis.groups,
-        analysis.infrastructure_group.as_ref(),
-        &response,
-    );
-
-    finalize_refined_groups(&mut refined_groups, file_centrality.as_ref(), &weights);
-
-    for warning in &warnings {
-        tracing::warn!(target: "refinement", "repair: {}", warning.message);
-        job.emit(ActivityEntry::info(
-            provider_name.clone(),
-            format!("Refinement repair: {}", warning.message),
-            Some("refinement.repair".to_string()),
-        ))
-        .await;
-    }
-
-    emit_diffcore_activity(
-        &job,
-        format!(
-            "Refinement proposed {}",
-            refinement_operations_summary(&response)
-        ),
-    )
-    .await;
-
-    Ok(RefinementResult {
-        refined_groups,
-        infrastructure_group: infra,
-        refinement_response: response,
-        provider: provider_name,
-        model: model_name,
-        had_changes: true,
-        warnings,
-    })
 }
 
 #[cfg_attr(feature = "desktop", tauri::command)]
@@ -1015,157 +786,6 @@ pub fn start_annotate_group(
     });
 
     Ok(start)
-}
-
-#[cfg_attr(feature = "desktop", tauri::command)]
-pub fn start_refine_groups(
-    repo_path: Option<String>,
-    llm_provider: Option<String>,
-    llm_model: Option<String>,
-    state: State<'_, AppState>,
-) -> Result<AsyncLlmJobStart, CommandError> {
-    let analysis = load_cached_analysis(&state)?;
-    let (mut config, workdir) = load_config_from_path(repo_path.as_deref());
-    if let Some(provider) = llm_provider {
-        config.llm.refinement.provider = Some(provider.clone());
-        if config.llm.provider.is_none() {
-            config.llm.provider = Some(provider);
-        }
-    }
-    if let Some(model) = llm_model {
-        config.llm.refinement.model = Some(model.clone());
-        if config.llm.model.is_none() {
-            config.llm.model = Some(model);
-        }
-    }
-
-    let refinement_llm_config = diffcore_core::config::LlmConfig {
-        provider: config
-            .llm
-            .refinement
-            .provider
-            .clone()
-            .or(config.llm.provider.clone()),
-        model: config
-            .llm
-            .refinement
-            .model
-            .clone()
-            .or(config.llm.model.clone()),
-        key_cmd: config
-            .llm
-            .refinement
-            .key_cmd
-            .clone()
-            .or(config.llm.key_cmd.clone()),
-        key: config.llm.key.clone(),
-        annotations_enabled: config.llm.annotations_enabled,
-        refinement: config.llm.refinement.clone(),
-        metadata: config.llm.metadata.clone(),
-    };
-
-    let provider_name = refinement_llm_config
-        .provider
-        .clone()
-        .unwrap_or_else(|| "anthropic".to_string());
-    let model_name = refinement_llm_config
-        .model
-        .clone()
-        .unwrap_or_else(|| default_model_for_provider(&provider_name).to_string());
-    let (job, start) =
-        state.create_llm_job("refinement", &provider_name, &model_name, "Refining groups")?;
-
-    let job_id = start.job_id.clone();
-    let job_id_for_cleanup = job_id.clone();
-    let jobs_for_cleanup = Arc::clone(&state.refinement_jobs);
-    let analysis_for_persist = Arc::clone(&state.last_analysis);
-    let file_centrality = state
-        .last_file_centrality
-        .lock()
-        .ok()
-        .and_then(|c| c.clone());
-    let weights = config.ranking.clone();
-    let handle = crate::runtime::background().spawn(async move {
-        match run_refinement_with_activity(
-            analysis,
-            refinement_llm_config,
-            workdir,
-            job.clone(),
-            file_centrality,
-            weights,
-        )
-        .await
-        {
-            Ok(response) => {
-                // Persist before completing the job. Every backend command that
-                // reads `last_analysis` — describe_groups, annotate_overview —
-                // would otherwise keep answering about pre-refinement groups.
-                if response.had_changes {
-                    match analysis_for_persist.lock() {
-                        Ok(mut last) => {
-                            if let Some(ref mut a) = *last {
-                                a.groups = response.refined_groups.clone();
-                                a.infrastructure_group = response.infrastructure_group.clone();
-                                a.summary.total_groups = a.groups.len() as u32;
-                            }
-                        }
-                        Err(error) => warn!(
-                            "Failed to persist refined groups (lock poisoned): {}",
-                            error
-                        ),
-                    }
-                }
-
-                match serde_json::to_value(&response) {
-                    Ok(value) => job.complete("refinement", value).await,
-                    Err(error) => {
-                        job.fail(format!(
-                            "Failed to serialize refinement response: {}",
-                            error
-                        ))
-                        .await
-                    }
-                }
-            }
-            Err(error) => job.fail(error.to_string()).await,
-        }
-        if let Ok(mut map) = jobs_for_cleanup.lock() {
-            map.remove(&job_id_for_cleanup);
-        }
-    });
-
-    if let Ok(mut map) = state.refinement_jobs.lock() {
-        map.insert(job_id, handle);
-    }
-
-    Ok(start)
-}
-
-/// Cancel an in-flight refinement job by aborting the spawned task.
-///
-/// Aborts the spawned task, dropping any in-flight HTTP request to the LLM
-/// provider, and emits a failure event on the job stream so the frontend's
-/// `EventSource` terminates cleanly.
-#[cfg_attr(feature = "desktop", tauri::command)]
-pub async fn cancel_refine_groups(
-    job_id: String,
-    state: State<'_, AppState>,
-) -> Result<bool, CommandError> {
-    let handle = {
-        let mut map = state
-            .refinement_jobs
-            .lock()
-            .map_err(|e| CommandError::Analysis(format!("Lock poisoned: {}", e)))?;
-        map.remove(&job_id)
-    };
-    let Some(handle) = handle else {
-        return Ok(false);
-    };
-    handle.abort();
-    let manager = Arc::clone(&state.activity_manager);
-    let job = activity_stream::JobHandle::new(manager, job_id);
-    job.fail("Cancelled by user").await;
-    Ok(true)
 }
 
 /// Run LLM Pass 1 (overview annotation) on the cached analysis.
@@ -1370,10 +990,6 @@ pub async fn annotate_group(
     Ok(response)
 }
 
-/// Run LLM refinement pass on the cached analysis groups.
-///
-/// Takes the deterministic groups (v1) and asks an LLM to suggest structural
-/// improvements: splits, merges, re-ranks, and reclassifications. Applies the
 /// Run the LLM group metadata pass over the cached analysis.
 ///
 /// Fills in `description`, `invariant`, `review_focus` and friends on every
@@ -1460,251 +1076,6 @@ pub async fn describe_groups(
     }
 
     Ok(groups)
-}
-
-/// refinement operations and returns the result containing both the refined
-/// groups and the raw refinement response (for change indicators in the UI).
-///
-/// Falls back to returning the original groups if refinement produces no changes
-/// or validation fails.
-#[cfg_attr(feature = "desktop", tauri::command)]
-pub async fn refine_groups(
-    repo_path: Option<String>,
-    llm_provider: Option<String>,
-    llm_model: Option<String>,
-    state: State<'_, AppState>,
-) -> Result<RefinementResult, CommandError> {
-    // Get the cached analysis
-    let analysis = {
-        let last = state
-            .last_analysis
-            .lock()
-            .map_err(|e| CommandError::Analysis(format!("Lock poisoned: {}", e)))?;
-        last.clone().ok_or_else(|| {
-            CommandError::Analysis("No analysis available. Run analyze first.".into())
-        })?
-    };
-
-    // Load config, applying frontend overrides
-    let (mut config, workdir) = load_config_from_path(repo_path.as_deref());
-    // Use refinement-specific provider/model if set, otherwise fall back to overrides
-    if let Some(p) = llm_provider {
-        config.llm.refinement.provider = Some(p.clone());
-        if config.llm.provider.is_none() {
-            config.llm.provider = Some(p);
-        }
-    }
-    if let Some(m) = llm_model {
-        config.llm.refinement.model = Some(m.clone());
-        if config.llm.model.is_none() {
-            config.llm.model = Some(m);
-        }
-    }
-
-    // Build LLM config for the refinement provider
-    let refinement_llm_config = diffcore_core::config::LlmConfig {
-        provider: config
-            .llm
-            .refinement
-            .provider
-            .clone()
-            .or(config.llm.provider.clone()),
-        model: config
-            .llm
-            .refinement
-            .model
-            .clone()
-            .or(config.llm.model.clone()),
-        key_cmd: config
-            .llm
-            .refinement
-            .key_cmd
-            .clone()
-            .or(config.llm.key_cmd.clone()),
-        key: config.llm.key.clone(),
-        annotations_enabled: config.llm.annotations_enabled,
-        refinement: config.llm.refinement.clone(),
-        metadata: config.llm.metadata.clone(),
-    };
-
-    let provider = llm::create_provider_for_workdir(&refinement_llm_config, workdir.as_deref())
-        .map_err(|e| CommandError::Llm(format!("{}", e)))?;
-
-    // Serialize analysis for the refinement request
-    let analysis_json = serde_json::to_string_pretty(&analysis)
-        .map_err(|e| CommandError::Llm(format!("Failed to serialize analysis: {}", e)))?;
-
-    let diff_summary = format!(
-        "{} files changed across {} groups",
-        analysis.summary.total_files_changed, analysis.summary.total_groups,
-    );
-
-    let request = refinement::build_refinement_request(
-        &analysis.groups,
-        analysis.infrastructure_group.as_ref(),
-        &analysis_json,
-        &diff_summary,
-    );
-
-    let response = provider
-        .refine_groups(&request)
-        .await
-        .map_err(|e| CommandError::Llm(format!("{}", e)))?;
-
-    let provider_name = refinement_llm_config
-        .provider
-        .unwrap_or_else(|| "anthropic".to_string());
-    let model_name = refinement_llm_config
-        .model
-        .unwrap_or_else(|| default_model_for_provider(&provider_name).to_string());
-
-    if !refinement::has_refinements(&response) {
-        return Ok(RefinementResult {
-            refined_groups: analysis.groups.clone(),
-            infrastructure_group: analysis.infrastructure_group.clone(),
-            refinement_response: response,
-            provider: provider_name,
-            model: model_name,
-            had_changes: false,
-            warnings: Vec::new(),
-        });
-    }
-
-    // Apply the refinement leniently: repair what we can, drop what we can't,
-    // surface warnings instead of erroring on individual hallucinated ops.
-    let (mut refined_groups, infra, warnings) = refinement::apply_refinement_lenient(
-        &analysis.groups,
-        analysis.infrastructure_group.as_ref(),
-        &response,
-    );
-
-    finalize_refined_groups(
-        &mut refined_groups,
-        state
-            .last_file_centrality
-            .lock()
-            .ok()
-            .and_then(|c| c.clone())
-            .as_ref(),
-        &config.ranking,
-    );
-
-    for w in &warnings {
-        warn!("Refinement repair: {}", w.message);
-    }
-
-    // Update cached analysis with refined groups
-    match state.last_analysis.lock() {
-        Ok(mut last) => {
-            if let Some(ref mut a) = *last {
-                a.groups = refined_groups.clone();
-                a.infrastructure_group = infra.clone();
-            }
-        }
-        Err(e) => warn!(
-            "Failed to update last_analysis with refinement (lock poisoned): {}",
-            e
-        ),
-    }
-
-    Ok(RefinementResult {
-        refined_groups,
-        infrastructure_group: infra,
-        refinement_response: response,
-        provider: provider_name,
-        model: model_name,
-        had_changes: true,
-        warnings,
-    })
-}
-
-/// Result of a refinement pass, including both the refined groups and
-/// the raw refinement operations (for UI change indicators).
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct RefinementResult {
-    /// The refined flow groups (v2) — or original groups if no changes.
-    pub refined_groups: Vec<diffcore_core::types::FlowGroup>,
-    /// The refined infrastructure group.
-    pub infrastructure_group: Option<diffcore_core::types::InfrastructureGroup>,
-    /// The raw refinement response with split/merge/re-rank/reclassify operations.
-    pub refinement_response: RefinementResponse,
-    /// Which provider performed the refinement.
-    pub provider: String,
-    /// Which model performed the refinement.
-    pub model: String,
-    /// Whether the refinement actually produced changes.
-    pub had_changes: bool,
-    /// Non-fatal warnings from the lenient apply path: repaired IDs and
-    /// dropped operations. Empty in the common case.
-    #[serde(default)]
-    pub warnings: Vec<diffcore_core::llm::refinement::RefinementWarning>,
-}
-
-/// Load cached refinement result for the current analysis.
-///
-/// Tries two keys: (1) diff-hash key (exact match), (2) branch-based key (same branch
-/// across worktrees, even with different uncommitted changes).
-#[cfg_attr(feature = "desktop", tauri::command)]
-pub fn get_cached_refinement(
-    repo_path: Option<String>,
-    state: State<'_, AppState>,
-) -> Result<Option<RefinementResult>, CommandError> {
-    // Try diff-hash key first (exact content match)
-    let diff_key = state.last_cache_key.lock().ok().and_then(|k| k.clone());
-    if let Some(ref key) = diff_key {
-        if let Some(json) = cache::load_cached_refinement(key) {
-            if let Ok(result) = serde_json::from_str::<RefinementResult>(&json) {
-                return Ok(Some(result));
-            }
-        }
-    }
-
-    // Fallback: try branch-based key (works across worktrees on same branch)
-    if let Some(ref repo) = repo_path {
-        if let Ok(branch_key) = comment_cache_key(repo) {
-            let branch_refine_key = format!("branch_{}", branch_key);
-            if let Some(json) = cache::load_cached_refinement(&branch_refine_key) {
-                if let Ok(result) = serde_json::from_str::<RefinementResult>(&json) {
-                    return Ok(Some(result));
-                }
-            }
-        }
-    }
-
-    Ok(None)
-}
-
-/// Store a refinement result in the global cache ($XDG_CACHE_HOME/diffcore/refinements/).
-///
-/// Stores under both diff-hash key and branch-based key for cross-worktree access.
-#[cfg_attr(feature = "desktop", tauri::command)]
-pub fn store_refinement_cache(
-    result: RefinementResult,
-    repo_path: Option<String>,
-    state: State<'_, AppState>,
-) -> Result<(), CommandError> {
-    let json = match serde_json::to_string(&result) {
-        Ok(j) => j,
-        Err(e) => {
-            warn!("Failed to serialize refinement for caching: {}", e);
-            return Ok(());
-        }
-    };
-
-    // Store under diff-hash key
-    if let Some(cache_key) = state.last_cache_key.lock().ok().and_then(|k| k.clone()) {
-        cache::store_cached_refinement(&cache_key, &json);
-    }
-
-    // Also store under branch-based key for cross-worktree access
-    if let Some(ref repo) = repo_path {
-        if let Ok(branch_key) = comment_cache_key(repo) {
-            let branch_refine_key = format!("branch_{}", branch_key);
-            cache::store_cached_refinement(&branch_refine_key, &json);
-        }
-    }
-
-    Ok(())
 }
 
 /// Background LLM job registration payload returned before SSE streaming begins.
@@ -1846,37 +1217,12 @@ pub fn get_llm_settings(repo_path: Option<String>) -> Result<LlmSettings, Comman
         }
     };
 
-    let configured_refinement_provider = config
-        .llm
-        .refinement
-        .provider
-        .as_deref()
-        .or(configured_provider);
-    let refinement_provider = preferred_provider_for_runtime(
-        configured_refinement_provider,
-        &codex_status,
-        &claude_status,
-    );
-    let refinement_model = preferred_model_for_runtime(
-        config
-            .llm
-            .refinement
-            .model
-            .clone()
-            .or(config.llm.model.clone()),
-        configured_refinement_provider,
-        &refinement_provider,
-    );
-
     Ok(LlmSettings {
         annotations_enabled: config.llm.annotations_enabled,
-        refinement_enabled: config.llm.refinement.enabled,
         provider,
         model,
         api_key_source,
         has_api_key,
-        refinement_provider,
-        refinement_model,
         metadata_enabled: config.llm.metadata.enabled,
         global_config_path: display_global_config_path(),
         api_key_in_config,
@@ -1901,10 +1247,7 @@ pub fn save_llm_settings(_repo_path: String, settings: LlmSettings) -> Result<()
     config.llm.provider = Some(settings.provider);
     config.llm.model = Some(settings.model);
     // Don't overwrite key_cmd — that's managed manually
-    config.llm.refinement.enabled = settings.refinement_enabled;
     config.llm.metadata.enabled = settings.metadata_enabled;
-    config.llm.refinement.provider = Some(settings.refinement_provider);
-    config.llm.refinement.model = Some(settings.refinement_model);
     config.llm.annotations_enabled = settings.annotations_enabled;
 
     // Update diff behavior
@@ -2353,14 +1696,12 @@ fn abbreviate_home(path: &Path) -> String {
 /// LLM settings for the UI — surface for the settings panel.
 ///
 /// Contains the current provider/model configuration, API key status,
-/// and annotation/refinement toggle states. Returned by `get_llm_settings`
+/// and annotation/metadata toggle states. Returned by `get_llm_settings`
 /// and accepted by `save_llm_settings`.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct LlmSettings {
     /// Whether LLM annotations are enabled (controls visibility of Summarize PR / Analyze buttons).
     pub annotations_enabled: bool,
-    /// Whether LLM refinement is enabled.
-    pub refinement_enabled: bool,
     /// Whether the group metadata pass runs automatically after analyze.
     pub metadata_enabled: bool,
     /// Selected LLM backend: subscription-backed CLI or direct API provider.
@@ -2371,10 +1712,6 @@ pub struct LlmSettings {
     pub api_key_source: String,
     /// Whether an API key is actually available (resolvable).
     pub has_api_key: bool,
-    /// Refinement provider (can differ from annotation provider).
-    pub refinement_provider: String,
-    /// Refinement model.
-    pub refinement_model: String,
     /// Where shared LLM settings are stored.
     pub global_config_path: String,
     /// Whether a key is stored in the config file (so the UI can offer to
@@ -3292,14 +2629,11 @@ mod tests {
     fn test_llm_settings_serde_roundtrip() {
         let settings = LlmSettings {
             annotations_enabled: true,
-            refinement_enabled: false,
             metadata_enabled: true,
             provider: "codex".to_string(),
             model: "default".to_string(),
             api_key_source: "Codex CLI login".to_string(),
             has_api_key: true,
-            refinement_provider: "claude".to_string(),
-            refinement_model: "default".to_string(),
             global_config_path: "~/.diffcore/config.toml".to_string(),
             api_key_in_config: false,
             codex_available: true,
@@ -3313,10 +2647,7 @@ mod tests {
         assert_eq!(back.provider, "codex");
         assert_eq!(back.model, "default");
         assert!(back.annotations_enabled);
-        assert!(!back.refinement_enabled);
         assert!(back.has_api_key);
-        assert_eq!(back.refinement_provider, "claude");
-        assert_eq!(back.refinement_model, "default");
         assert!(back.codex_available);
         assert!(back.claude_authenticated);
     }
@@ -3404,87 +2735,6 @@ mod tests {
     fn test_load_config_from_path_invalid() {
         let (_config, workdir) = load_config_from_path(Some("/nonexistent/path"));
         assert!(workdir.is_none());
-    }
-
-    #[test]
-    fn test_refinement_result_serde_roundtrip() {
-        use diffcore_core::llm::schema::RefinementResponse;
-
-        let result = RefinementResult {
-            refined_groups: vec![],
-            infrastructure_group: None,
-            refinement_response: RefinementResponse {
-                splits: vec![],
-                merges: vec![],
-                re_ranks: vec![],
-                reclassifications: vec![],
-                reasoning: "No changes needed".to_string(),
-            },
-            provider: "anthropic".to_string(),
-            model: "claude-sonnet-4-6".to_string(),
-            had_changes: false,
-            warnings: Vec::new(),
-        };
-        let json = serde_json::to_string(&result).unwrap();
-        let back: RefinementResult = serde_json::from_str(&json).unwrap();
-        assert_eq!(back.provider, "anthropic");
-        assert_eq!(back.model, "claude-sonnet-4-6");
-        assert!(!back.had_changes);
-        assert!(back.refined_groups.is_empty());
-        assert!(back.infrastructure_group.is_none());
-        assert!(back.warnings.is_empty());
-    }
-
-    #[test]
-    fn test_refinement_result_with_changes() {
-        use diffcore_core::llm::schema::{RefinementNewGroup, RefinementResponse, RefinementSplit};
-        use diffcore_core::types::{ChangeStats, FileChange, FileRole, FlowGroup};
-
-        let result = RefinementResult {
-            refined_groups: vec![FlowGroup {
-                id: "g1".to_string(),
-                name: "Refined group".to_string(),
-                entrypoint: None,
-                files: vec![FileChange {
-                    path: "test.ts".to_string(),
-                    flow_position: 0,
-                    role: FileRole::Entrypoint,
-                    changes: ChangeStats {
-                        additions: 10,
-                        deletions: 5,
-                    },
-                    symbols_changed: vec![],
-                }],
-                edges: vec![],
-                risk_score: 0.5,
-                review_order: 1,
-                ..Default::default()
-            }],
-            infrastructure_group: None,
-            refinement_response: RefinementResponse {
-                splits: vec![RefinementSplit {
-                    source_group_id: "g1".to_string(),
-                    new_groups: vec![RefinementNewGroup {
-                        name: "Sub A".to_string(),
-                        files: vec!["test.ts".to_string()],
-                    }],
-                    reason: "test split".to_string(),
-                }],
-                merges: vec![],
-                re_ranks: vec![],
-                reclassifications: vec![],
-                reasoning: "Split for clarity".to_string(),
-            },
-            provider: "openai".to_string(),
-            model: "gpt-4.1".to_string(),
-            had_changes: true,
-            warnings: Vec::new(),
-        };
-        let json = serde_json::to_string(&result).unwrap();
-        let back: RefinementResult = serde_json::from_str(&json).unwrap();
-        assert!(back.had_changes);
-        assert_eq!(back.refined_groups.len(), 1);
-        assert_eq!(back.refinement_response.splits.len(), 1);
     }
 
     #[test]
@@ -4179,14 +3429,11 @@ mod tests {
     fn test_llm_settings_annotations_enabled_roundtrip_true() {
         let settings = LlmSettings {
             annotations_enabled: true,
-            refinement_enabled: true,
             metadata_enabled: true,
             provider: "codex".to_string(),
             model: "default".to_string(),
             api_key_source: "test".to_string(),
             has_api_key: true,
-            refinement_provider: "codex".to_string(),
-            refinement_model: "default".to_string(),
             global_config_path: "~/.diffcore/config.toml".to_string(),
             api_key_in_config: false,
             codex_available: false,
@@ -4198,21 +3445,17 @@ mod tests {
         let json = serde_json::to_string(&settings).unwrap();
         let back: LlmSettings = serde_json::from_str(&json).unwrap();
         assert!(back.annotations_enabled);
-        assert!(back.refinement_enabled);
     }
 
     #[test]
     fn test_llm_settings_annotations_enabled_roundtrip_false() {
         let settings = LlmSettings {
             annotations_enabled: false,
-            refinement_enabled: false,
             metadata_enabled: true,
             provider: "anthropic".to_string(),
             model: "claude-sonnet-4-6".to_string(),
             api_key_source: "env".to_string(),
             has_api_key: false,
-            refinement_provider: "anthropic".to_string(),
-            refinement_model: "claude-sonnet-4-6".to_string(),
             global_config_path: "/tmp/config.toml".to_string(),
             api_key_in_config: false,
             codex_available: true,
@@ -4224,21 +3467,17 @@ mod tests {
         let json = serde_json::to_string(&settings).unwrap();
         let back: LlmSettings = serde_json::from_str(&json).unwrap();
         assert!(!back.annotations_enabled);
-        assert!(!back.refinement_enabled);
     }
 
     #[test]
     fn test_llm_settings_all_fields_present_in_json() {
         let settings = LlmSettings {
             annotations_enabled: true,
-            refinement_enabled: true,
             metadata_enabled: true,
             provider: "openai".to_string(),
             model: "gpt-4.1".to_string(),
             api_key_source: "config".to_string(),
             has_api_key: true,
-            refinement_provider: "gemini".to_string(),
-            refinement_model: "gemini-2.5-flash".to_string(),
             global_config_path: "~/.diffcore/config.toml".to_string(),
             api_key_in_config: false,
             codex_available: true,
@@ -4249,12 +3488,9 @@ mod tests {
         };
         let json = serde_json::to_string(&settings).unwrap();
         assert!(json.contains("annotations_enabled"));
-        assert!(json.contains("refinement_enabled"));
         assert!(json.contains("provider"));
         assert!(json.contains("model"));
         assert!(json.contains("has_api_key"));
-        assert!(json.contains("refinement_provider"));
-        assert!(json.contains("refinement_model"));
         assert!(json.contains("global_config_path"));
         assert!(json.contains("include_uncommitted"));
     }

@@ -94,7 +94,7 @@ async fn sse_endpoint_serializes_activity_payloads() {
     let manager = Arc::new(ActivityManager::new());
     let base_url = spawn_sse_server(Arc::clone(&manager)).unwrap();
     let job = manager
-        .create_job("refinement", "codex", "default", "Refining groups")
+        .create_job("overview", "codex", "default", "Summarizing PR")
         .await;
 
     job.emit(ActivityEntry {
@@ -109,7 +109,7 @@ async fn sse_endpoint_serializes_activity_payloads() {
         timestamp_ms: 1,
     })
     .await;
-    job.complete("refinement", json!({ "ok": true })).await;
+    job.complete("overview", json!({ "ok": true })).await;
 
     let response = reqwest::get(format!("{}/llm/jobs/{}/events", base_url, job.job_id()))
         .await

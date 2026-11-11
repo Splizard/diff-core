@@ -2,7 +2,7 @@
 //!
 //! The manifest is a simplified representation of the analysis groupings
 //! that can be exported, edited (by humans or AI agents), and re-imported.
-//! This enables an iterative refinement loop:
+//! This enables an iterative regrouping loop:
 //!
 //! 1. `diffcore analyze` → produces initial groupings
 //! 2. `diffcore export-groups -o groups.json` → editable manifest

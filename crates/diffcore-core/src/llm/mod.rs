@@ -15,7 +15,6 @@ pub mod gemini;
 pub mod judge;
 pub mod metadata;
 pub mod openai;
-pub mod refinement;
 pub mod schema;
 pub mod vcr;
 
@@ -29,7 +28,7 @@ use std::future::Future;
 use crate::config::LlmConfig;
 use schema::{
     JudgeRequest, JudgeResponse, MetadataRequest, MetadataResponse, Pass1Request, Pass1Response,
-    Pass2Request, Pass2Response, RefinementRequest, RefinementResponse,
+    Pass2Request, Pass2Response,
 };
 
 /// Errors that can occur during LLM operations.
@@ -364,16 +363,6 @@ pub trait LlmProvider: Send + Sync {
 
     /// Run LLM-as-judge evaluation of analysis quality.
     async fn evaluate_quality(&self, request: &JudgeRequest) -> Result<JudgeResponse, LlmError>;
-
-    /// Run LLM refinement pass on deterministic flow groups.
-    ///
-    /// Takes the deterministic analysis output and suggests structural improvements:
-    /// splits, merges, re-ranks, and reclassifications. Returns empty operations
-    /// if no refinements are needed.
-    async fn refine_groups(
-        &self,
-        request: &RefinementRequest,
-    ) -> Result<RefinementResponse, LlmError>;
 
     /// Run the group metadata pass on one batch of final flow groups.
     ///
@@ -786,120 +775,6 @@ pub fn judge_user_prompt(request: &JudgeRequest) -> String {
     prompt
 }
 
-/// Build the system prompt for the LLM refinement pass.
-pub fn refinement_system_prompt() -> String {
-    format!(
-        "You are a senior software architect reviewing the output of an automated diff analysis tool. \
-         The tool has grouped changed files into semantic flow groups using static analysis \
-         (symbol graph reachability from entrypoints). Your task is to refine these groupings \
-         by identifying cases where static analysis got it wrong.\n\n\
-         You can suggest four types of refinements:\n\
-         1. **Splits**: Break a group that contains logically unrelated changes into separate groups\n\
-         2. **Merges**: Combine groups that are actually part of the same logical change\n\
-         3. **Re-ranks**: Set the order the groups should be READ in\n\
-         4. **Reclassifications**: Move a file from one group to another, or from 'infrastructure' \
-            (ungrouped) into a flow group when it clearly belongs there. Use to_group_id='infrastructure' \
-            to demote, or from_group_id='infrastructure' to promote ungrouped files into a group.\n\n\
-         IMPORTANT — Reading order is the point of re_ranks:\n\
-         The static ranking orders groups by risk, which is NOT a reading order. Your job is to \
-         turn it into one. Order the groups so a reviewer reading top to bottom never has to hold \
-         an unexplained concept in their head: every group should be understandable using only \
-         what the groups above it already established. Minimize how often the reviewer has to \
-         re-contextualize.\n\
-         In practice that means dependency direction, not risk: \
-         schemas/types/models → data access → services/business logic → API routes/handlers → \
-         UI/clients → tests and docs that describe the above. A high-risk auth change that depends \
-         on a new schema still reads AFTER that schema.\n\
-         Emit a re_rank entry for EVERY group, giving a complete 1..N ordering. A partial list \
-         leaves the remaining groups in risk order and produces a mixed, harder-to-follow sequence. \
-         Positions are 1-based, where 1 is read first.\n\
-         Note: files WITHIN each group are already ordered entrypoint-first, outward-in (by call \
-         depth from the entrypoint). Do not try to reorder files; only order the groups.\n\n\
-         IMPORTANT — Ungrouped/Infrastructure files:\n\
-         Review the infrastructure (ungrouped) files list carefully. Many files end up ungrouped \
-         because static analysis couldn't trace a reachability path from an entrypoint, but they \
-         may logically belong to an existing group (e.g., a schema file that supports a route handler, \
-         a config used by a service, a test utility for a specific feature). Reclassify these into \
-         the appropriate group using from_group_id='infrastructure'. You can also create new groups \
-         for ungrouped files by splitting them out.\n\n\
-         IMPORTANT — Descriptive group names:\n\
-         When naming groups (in splits, merges, or any new_groups), use descriptive names \
-         that clearly communicate what the change does and which domain/feature it affects. \
-         Avoid generic names like 'page test flow' or 'config update'. Instead use names like \
-         'media asset upload pipeline', 'user authentication middleware', \
-         'storage metering schema migration', etc. The name should help a reviewer \
-         understand the group's purpose at a glance.\n\n\
-         IMPORTANT — Divide and conquer for large diffs:\n\
-         For large PRs (10+ groups or 50+ files), apply a divide-and-conquer strategy:\n\
-         - First identify the major domains/features being changed\n\
-         - Group files by domain, then by layer within each domain\n\
-         - Merge scattered single-file groups that belong to the same domain\n\
-         - Order review by dependency direction: schemas/types → data layer → services → API routes → UI\n\n\
-         Be conservative — only suggest refinements where the static grouping is clearly suboptimal. \
-         If the grouping looks reasonable, return empty arrays.\n\n\
-         {}",
-        schema::refinement_schema_description()
-    )
-}
-
-/// Build the user prompt for the refinement pass from a request.
-pub fn refinement_user_prompt(request: &RefinementRequest) -> String {
-    let mut prompt = format!("## Diff Summary\n{}\n\n", request.diff_summary);
-    prompt.push_str("## Current Flow Groups (from static analysis)\n");
-    for group in &request.groups {
-        prompt.push_str(&format!(
-            "\n### {} ({})\n- Entrypoint: {}\n- Risk score: {:.2}\n- Review order: {}\n- Files: {}\n",
-            group.name,
-            group.id,
-            group.entrypoint.as_deref().unwrap_or("none"),
-            group.risk_score,
-            group.review_order,
-            group.files.join(", "),
-        ));
-    }
-
-    // Explicit allow-list of valid group IDs. The LLM frequently confuses the
-    // `id` field with the descriptive `name` and emits a title where an ID was
-    // expected; this inline list makes the contract unambiguous.
-    let valid_ids: Vec<String> = request.groups.iter().map(|g| g.id.clone()).collect();
-    prompt.push_str("\n## Valid group IDs (use these literal strings)\n");
-    prompt.push_str(
-        "source_group_id, group_ids, from_group_id, and to_group_id MUST be \
-         one of the literal IDs below, or the string 'infrastructure'. \
-         NEVER substitute a group's descriptive name for its ID. IDs look \
-         like `group_1`, not like 'Billing domain model'.\n\n",
-    );
-    prompt.push_str(&format!("Allowed IDs: [{}", valid_ids.join(", ")));
-    if !valid_ids.is_empty() {
-        prompt.push_str(", ");
-    }
-    prompt.push_str("infrastructure]\n");
-
-    // Include infrastructure/ungrouped files so the LLM can consider promoting them
-    if !request.infrastructure_files.is_empty() {
-        prompt.push_str("\n## Ungrouped / Infrastructure Files\n");
-        prompt.push_str("These files were not assigned to any flow group by static analysis. \
-                         Consider whether any should be reclassified into an existing group \
-                         (use from_group_id='infrastructure') or form a new group via splits.\n\n");
-        for file in &request.infrastructure_files {
-            prompt.push_str(&format!("- {}\n", file));
-        }
-    }
-
-    prompt.push_str(&format!(
-        "\n## Full Analysis JSON\n```json\n{}\n```\n",
-        request.analysis_json
-    ));
-    prompt.push_str(
-        "\nReview the groups above and the ungrouped files. Suggest refinements where the static \
-         grouping is clearly wrong or suboptimal. Promote ungrouped files into groups where they \
-         logically belong. If the grouping looks reasonable, return empty arrays. \
-         Reminder: group ID fields must be literal IDs from the allowed list above — \
-         never use names or free-form titles.",
-    );
-    prompt
-}
-
 /// Build the user prompt for Pass 2 from a request.
 pub fn pass2_user_prompt(request: &Pass2Request) -> String {
     let mut prompt = format!(
@@ -1247,76 +1122,6 @@ mod tests {
         assert!(prompt.contains("b.py"));
         assert!(prompt.contains("```ts"));
         assert!(prompt.contains("```py"));
-    }
-
-    // ── Refinement Prompt Tests ──
-
-    #[test]
-    fn test_refinement_system_prompt_content() {
-        let prompt = refinement_system_prompt();
-        assert!(prompt.contains("senior software architect"));
-        assert!(prompt.contains("splits"));
-        assert!(prompt.contains("merges"));
-        assert!(prompt.contains("re_ranks"));
-        assert!(prompt.contains("reclassifications"));
-        assert!(prompt.contains("JSON"));
-    }
-
-    #[test]
-    fn test_refinement_user_prompt_includes_groups() {
-        let request = schema::RefinementRequest {
-            analysis_json: r#"{"version":"1.0.0"}"#.to_string(),
-            diff_summary: "20 files changed".to_string(),
-            groups: vec![schema::RefinementGroupInput {
-                id: "g1".to_string(),
-                name: "Auth flow".to_string(),
-                entrypoint: Some("src/auth.ts::login".to_string()),
-                files: vec!["src/auth.ts".to_string(), "src/token.ts".to_string()],
-                risk_score: 0.75,
-                review_order: 1,
-            }],
-            infrastructure_files: vec!["package.json".to_string()],
-        };
-        let prompt = refinement_user_prompt(&request);
-        assert!(prompt.contains("20 files changed"));
-        assert!(prompt.contains("Auth flow"));
-        assert!(prompt.contains("src/auth.ts, src/token.ts"));
-        assert!(prompt.contains("0.75"));
-        assert!(prompt.contains(r#"{"version":"1.0.0"}"#));
-    }
-
-    #[test]
-    fn test_refinement_user_prompt_multiple_groups() {
-        let request = schema::RefinementRequest {
-            analysis_json: "{}".to_string(),
-            diff_summary: "diff".to_string(),
-            groups: vec![
-                schema::RefinementGroupInput {
-                    id: "g1".to_string(),
-                    name: "Group 1".to_string(),
-                    entrypoint: None,
-                    files: vec!["a.ts".to_string()],
-                    risk_score: 0.5,
-                    review_order: 1,
-                },
-                schema::RefinementGroupInput {
-                    id: "g2".to_string(),
-                    name: "Group 2".to_string(),
-                    entrypoint: Some("entry".to_string()),
-                    files: vec!["b.ts".to_string()],
-                    risk_score: 0.3,
-                    review_order: 2,
-                },
-            ],
-            infrastructure_files: vec!["config.json".to_string()],
-        };
-        let prompt = refinement_user_prompt(&request);
-        assert!(prompt.contains("Group 1"));
-        assert!(prompt.contains("Group 2"));
-        assert!(prompt.contains("config.json"));
-        assert!(prompt.contains("Ungrouped"));
-        assert!(prompt.contains("g1"));
-        assert!(prompt.contains("g2"));
     }
 
     // ── Error Display Tests ──

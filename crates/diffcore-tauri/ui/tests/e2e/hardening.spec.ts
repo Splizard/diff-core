@@ -8,7 +8,6 @@
  * - React Flow graph (node click, legend, fullscreen, minimap, single node)
  * - LLM controls (settings panel, toggles, provider/model dropdowns, API key states)
  * - Annotate button states (idle, loading, complete)
- * - Refine button states (banner, loading, original/refined toggle, change indicators)
  * - Empty states (no repo, no changes, 0 groups)
  * - Error states (error bar, dismissible)
  * - Large datasets (100+ files, 20+ groups)
@@ -170,14 +169,11 @@ function generateLargeAnalysis() {
 function generateNoApiKeySettings() {
   return {
     annotations_enabled: true,
-    refinement_enabled: false,
     metadata_enabled: false,
     provider: "anthropic",
     model: "claude-sonnet-4-6",
     api_key_source: "",
     has_api_key: false,
-    refinement_provider: "anthropic",
-    refinement_model: "claude-sonnet-4-6",
     global_config_path: "~/.config/diffcore/config.toml",
     api_key_in_config: false,
     codex_available: false,
@@ -372,10 +368,9 @@ test.describe("Hardening — LLM Controls", () => {
     // Verify all sections present
     await expect(page.locator(".settings-panel h3").filter({ hasText: "AI Access" })).toBeVisible();
     await expect(page.locator(".settings-panel h3").filter({ hasText: "Annotations" })).toBeVisible();
-    await expect(page.locator(".settings-panel h3").filter({ hasText: "Refinement" })).toBeVisible();
     await expect(page.locator(".settings-panel h3").filter({ hasText: "Exclude Paths" })).toBeVisible();
     await expect(page.locator(".settings-panel label").filter({ hasText: "Primary backend" })).toBeVisible();
-    // Both AI Access and Refinement sections have a "Model" label now
+    // The AI Access section has a "Model" label
     await expect(page.locator(".settings-panel label").filter({ hasText: "Model" }).first()).toBeVisible();
   });
 
@@ -415,26 +410,6 @@ test.describe("Hardening — LLM Controls", () => {
 
     await page.locator(".settings-panel").screenshot({
       path: path.join(SCREENSHOTS_DIR, "24-api-key-missing.png"),
-    });
-  });
-
-  test("25 — settings panel: refinement section expanded", async ({ page }) => {
-    await page.goto("/");
-    await waitForAnalysis(page);
-
-    await page.locator(".btn-settings").click();
-    await page.waitForTimeout(500);
-
-    // Enable refinement toggle
-    const refinementToggle = page.locator(".settings-refinement input[type='checkbox']");
-    await refinementToggle.check();
-    await page.waitForTimeout(300);
-
-    // Verify refinement sub-settings visible
-    await expect(page.locator(".settings-refinement .settings-row").first()).toBeVisible();
-
-    await page.locator(".settings-refinement").screenshot({
-      path: path.join(SCREENSHOTS_DIR, "25-refinement-settings-expanded.png"),
     });
   });
 
@@ -548,213 +523,6 @@ test.describe("Hardening — LLM Annotations", () => {
     await page.locator(".annotation-actions").screenshot({
       path: path.join(SCREENSHOTS_DIR, "30-buttons-no-api-key.png"),
     });
-  });
-});
-
-// ═══════════════════════════════════════════════════════════════════
-// Refinement
-// ═══════════════════════════════════════════════════════════════════
-
-test.describe("Hardening — Refinement", () => {
-  test("31 — refinement banner visible when enabled", async ({ page }) => {
-    await page.goto("/");
-    await waitForAnalysis(page);
-
-    // Enable refinement in settings
-    await page.evaluate((settings) => {
-      (window as any).__TEST_API__.setLlmSettings(settings);
-    }, {
-      annotations_enabled: true,
-      refinement_enabled: true,
-      metadata_enabled: false,
-      provider: "anthropic",
-      model: "claude-sonnet-4-6",
-      api_key_source: "ANTHROPIC_API_KEY",
-      has_api_key: true,
-      refinement_provider: "anthropic",
-      refinement_model: "claude-sonnet-4-6",
-    });
-    await page.waitForTimeout(300);
-
-    // Verify refinement banner is shown
-    await expect(page.locator(".refinement-banner")).toBeVisible();
-    await expect(page.locator(".refinement-banner")).toContainText("AI can improve");
-    await expect(page.locator(".btn-refine")).toBeVisible();
-
-    await page.locator(".refinement-banner").screenshot({
-      path: path.join(SCREENSHOTS_DIR, "31-refinement-banner.png"),
-    });
-  });
-
-  test("32 — refinement: complete with original/refined toggle", async ({ page }) => {
-    await page.goto("/");
-    await waitForAnalysis(page);
-
-    // Enable refinement
-    await page.evaluate((settings) => {
-      (window as any).__TEST_API__.setLlmSettings(settings);
-    }, {
-      annotations_enabled: true,
-      refinement_enabled: true,
-      metadata_enabled: false,
-      provider: "anthropic",
-      model: "claude-sonnet-4-6",
-      api_key_source: "ANTHROPIC_API_KEY",
-      has_api_key: true,
-      refinement_provider: "anthropic",
-      refinement_model: "claude-sonnet-4-6",
-    });
-    await page.waitForTimeout(300);
-
-    // Click Refine
-    await page.locator(".btn-refine").click();
-    await page.waitForTimeout(2000); // Mock delay is 1200ms
-
-    // Verify toggle exists
-    await expect(page.locator(".refinement-toggle")).toBeVisible();
-    // Refined should be active
-    await expect(page.locator(".toggle-btn.active")).toContainText("Refined");
-    // Verify "Refined by" badge
-    await expect(page.locator(".refined-badge")).toBeVisible();
-
-    await page.screenshot({
-      path: path.join(SCREENSHOTS_DIR, "32-refinement-complete.png"),
-      fullPage: false,
-    });
-  });
-
-  test("33 — refinement: change indicators on groups", async ({ page }) => {
-    await page.goto("/");
-    await waitForAnalysis(page);
-
-    // Enable refinement and run it
-    await page.evaluate((settings) => {
-      (window as any).__TEST_API__.setLlmSettings(settings);
-    }, {
-      annotations_enabled: true,
-      refinement_enabled: true,
-      metadata_enabled: false,
-      provider: "anthropic",
-      model: "claude-sonnet-4-6",
-      api_key_source: "ANTHROPIC_API_KEY",
-      has_api_key: true,
-      refinement_provider: "anthropic",
-      refinement_model: "claude-sonnet-4-6",
-    });
-    await page.waitForTimeout(300);
-
-    await page.locator(".btn-refine").click();
-    await page.waitForTimeout(2000);
-
-    // Verify change indicators are present
-    const changeIndicators = page.locator(".change-indicator");
-    expect(await changeIndicators.count()).toBeGreaterThanOrEqual(1);
-
-    // Verify split indicator
-    await expect(page.locator(".change-tag.change-split").first()).toBeVisible();
-
-    await page.locator(".panel-left").screenshot({
-      path: path.join(SCREENSHOTS_DIR, "33-refinement-change-indicators.png"),
-    });
-  });
-
-  test("34 — refinement: toggle back to original view", async ({ page }) => {
-    await page.goto("/");
-    await waitForAnalysis(page);
-
-    await page.evaluate((settings) => {
-      (window as any).__TEST_API__.setLlmSettings(settings);
-    }, {
-      annotations_enabled: true,
-      refinement_enabled: true,
-      metadata_enabled: false,
-      provider: "anthropic",
-      model: "claude-sonnet-4-6",
-      api_key_source: "ANTHROPIC_API_KEY",
-      has_api_key: true,
-      refinement_provider: "anthropic",
-      refinement_model: "claude-sonnet-4-6",
-    });
-    await page.waitForTimeout(300);
-
-    await page.locator(".btn-refine").click();
-    await page.waitForTimeout(2000);
-
-    // Switch to Original view
-    await page.locator(".toggle-btn").filter({ hasText: "Original" }).click();
-    await page.waitForTimeout(500);
-
-    // Verify Original is now active
-    await expect(page.locator(".toggle-btn.active")).toContainText("Original");
-    // Refined badge should be gone
-    await expect(page.locator(".refined-badge")).not.toBeVisible();
-    // Original group count should be 3
-    const groups = page.locator(".group-item:not(.infra-group)");
-    await expect(groups).toHaveCount(3);
-
-    await page.locator(".panel-left").screenshot({
-      path: path.join(SCREENSHOTS_DIR, "34-refinement-original-view.png"),
-    });
-  });
-
-  test("34c — the PR overview survives a refinement", async ({ page }) => {
-    await page.goto("/");
-    await waitForAnalysis(page);
-
-    await page.evaluate((settings) => {
-      (window as any).__TEST_API__.setLlmSettings(settings);
-    }, {
-      annotations_enabled: true,
-      refinement_enabled: true,
-      metadata_enabled: false,
-      provider: "anthropic",
-      model: "claude-sonnet-4-6",
-      api_key_source: "ANTHROPIC_API_KEY",
-      has_api_key: true,
-      refinement_provider: "anthropic",
-      refinement_model: "claude-sonnet-4-6",
-    });
-    await page.waitForTimeout(300);
-
-    await page.locator(".btn-refine").click();
-    await page.waitForTimeout(2000);
-
-    // Refining must not cost the user their PR overview
-    await page.getByTestId("annotations-tab").click();
-    await page.locator(".btn-pr-overview").click();
-
-    await expect(page.getByTestId("pr-overview")).toBeVisible();
-    await expect(page.locator(".llm-summary").first()).toBeVisible();
-  });
-
-  test("34b — refinement toggle crossfades the group list instead of hard-swapping it", async ({ page }) => {
-    await page.goto("/");
-    await waitForAnalysis(page);
-
-    await page.evaluate((settings) => {
-      (window as any).__TEST_API__.setLlmSettings(settings);
-    }, {
-      annotations_enabled: true,
-      refinement_enabled: true,
-      metadata_enabled: false,
-      provider: "anthropic",
-      model: "claude-sonnet-4-6",
-      api_key_source: "ANTHROPIC_API_KEY",
-      has_api_key: true,
-      refinement_provider: "anthropic",
-      refinement_model: "claude-sonnet-4-6",
-    });
-    await page.waitForTimeout(300);
-
-    await page.locator(".btn-refine").click();
-    await page.waitForTimeout(2000);
-
-    const groupList = page.getByTestId("group-list");
-
-    await page.locator(".toggle-btn").filter({ hasText: "Original" }).click();
-    await expect(groupList).toHaveAttribute("data-group-list-transition", /fading-out|fading-in/);
-    await page.waitForTimeout(350);
-    await expect(groupList).toHaveAttribute("data-group-list-transition", "idle");
   });
 });
 

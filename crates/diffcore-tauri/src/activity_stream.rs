@@ -342,10 +342,10 @@ mod tests {
 
     async fn finished_job(manager: &Arc<ActivityManager>) -> String {
         let handle = manager
-            .create_job("refinement", "codex", "default", "Refining")
+            .create_job("overview", "codex", "default", "Summarizing PR")
             .await;
         handle
-            .complete("refinement", serde_json::json!({ "refined_groups": [] }))
+            .complete("overview", serde_json::json!({ "summary": "" }))
             .await;
         handle.job_id().to_string()
     }
@@ -355,7 +355,7 @@ mod tests {
         let manager = Arc::new(ActivityManager::new());
         let done = finished_job(&manager).await;
         let live = manager
-            .create_job("refinement", "codex", "default", "Still going")
+            .create_job("overview", "codex", "default", "Still going")
             .await
             .job_id()
             .to_string();
@@ -396,7 +396,7 @@ mod tests {
             .finished_at = Some(Instant::now() - JOB_RETENTION - Duration::from_secs(1));
 
         let _ = manager
-            .create_job("refinement", "codex", "default", "Next")
+            .create_job("overview", "codex", "default", "Next")
             .await;
 
         assert!(manager.subscribe(&done).await.is_none());

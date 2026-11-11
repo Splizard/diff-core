@@ -7,7 +7,7 @@ Diffcore follows the [XDG Base Directory spec](https://specifications.freedeskto
 | Global config (LLM settings, API key) | `$XDG_CONFIG_HOME/diffcore/config.toml` |
 | UI preferences (theme, panel layout) | `$XDG_CONFIG_HOME/diffcore/ui.toml` |
 | Review comments | `$XDG_DATA_HOME/diffcore/comments/` |
-| Refinement + embedding caches | `$XDG_CACHE_HOME/diffcore/` |
+| Embedding caches | `$XDG_CACHE_HOME/diffcore/` |
 | Desktop log | `$XDG_STATE_HOME/diffcore/desktop.log` |
 | Project config | `<repo>/.diffcore.toml` |
 | IR cache, comments, eval history | `<repo>/.diffcore/` |

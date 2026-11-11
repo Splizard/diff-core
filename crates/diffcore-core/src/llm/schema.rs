@@ -156,107 +156,6 @@ pub struct JudgeCriterionScore {
     pub explanation: String,
 }
 
-// ── LLM Refinement ──
-
-/// Request context for the LLM refinement pass.
-///
-/// Takes the deterministic analysis output (groups v1) and asks the LLM
-/// to suggest structural improvements: splits, merges, re-ranks, and
-/// reclassifications.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct RefinementRequest {
-    /// The full analysis output JSON (serialized AnalysisOutput with groups v1).
-    pub analysis_json: String,
-    /// Diff text for context.
-    pub diff_summary: String,
-    /// Current flow groups (serialized summary for the LLM).
-    pub groups: Vec<RefinementGroupInput>,
-    /// Infrastructure/ungrouped files not assigned to any flow group.
-    #[serde(default)]
-    pub infrastructure_files: Vec<String>,
-}
-
-/// A flow group as presented to the LLM for refinement.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct RefinementGroupInput {
-    pub id: String,
-    pub name: String,
-    pub entrypoint: Option<String>,
-    pub files: Vec<String>,
-    pub risk_score: f64,
-    pub review_order: u32,
-}
-
-/// LLM refinement response with structural operations.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, JsonSchema)]
-pub struct RefinementResponse {
-    /// Groups to split (one group → two or more).
-    pub splits: Vec<RefinementSplit>,
-    /// Groups to merge (two or more → one).
-    pub merges: Vec<RefinementMerge>,
-    /// Groups to re-rank (change review order).
-    pub re_ranks: Vec<RefinementReRank>,
-    /// Files to reclassify (move between groups or change role).
-    pub reclassifications: Vec<RefinementReclassify>,
-    /// Overall reasoning for the refinement decisions.
-    pub reasoning: String,
-}
-
-/// Split operation: break one group into multiple.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, JsonSchema)]
-pub struct RefinementSplit {
-    /// ID of the group to split.
-    pub source_group_id: String,
-    /// The new sub-groups after splitting.
-    pub new_groups: Vec<RefinementNewGroup>,
-    /// Why this split is beneficial.
-    pub reason: String,
-}
-
-/// A new group created by a split operation.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, JsonSchema)]
-pub struct RefinementNewGroup {
-    /// Suggested name for the new group.
-    pub name: String,
-    /// Files that belong in this new group.
-    pub files: Vec<String>,
-}
-
-/// Merge operation: combine multiple groups into one.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, JsonSchema)]
-pub struct RefinementMerge {
-    /// IDs of the groups to merge.
-    pub group_ids: Vec<String>,
-    /// Suggested name for the merged group.
-    pub merged_name: String,
-    /// Why these groups should be merged.
-    pub reason: String,
-}
-
-/// Re-rank operation: change a group's review order.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, JsonSchema)]
-pub struct RefinementReRank {
-    /// ID of the group to re-rank.
-    pub group_id: String,
-    /// New suggested review position (1-based).
-    pub new_position: u32,
-    /// Why this group should be reviewed at this position.
-    pub reason: String,
-}
-
-/// Reclassify operation: move a file between groups or change its role.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, JsonSchema)]
-pub struct RefinementReclassify {
-    /// File path to reclassify.
-    pub file: String,
-    /// Current group ID (where the file is now).
-    pub from_group_id: String,
-    /// Target group ID (where the file should go). Use "infrastructure" for infra group.
-    pub to_group_id: String,
-    /// Why this file belongs in the target group.
-    pub reason: String,
-}
-
 // ── Group Review Metadata ──
 
 /// Request context for one batch of the group metadata pass.
@@ -393,63 +292,6 @@ You MUST include exactly these 5 criteria in the 'criteria' array:
 5. mermaid_accuracy: Does the Mermaid graph accurately represent the data flow between files in each group?"#
 }
 
-/// Generate the JSON schema description for the refinement pass.
-pub fn refinement_schema_description() -> &'static str {
-    r#"Respond with a JSON object matching this exact schema:
-{
-  "splits": [
-    {
-      "source_group_id": "string (ID of the group to split)",
-      "new_groups": [
-        {
-          "name": "string (human-readable name for the new sub-group)",
-          "files": ["string (file paths that belong in this sub-group)"]
-        }
-      ],
-      "reason": "string (why splitting this group improves review quality)"
-    }
-  ],
-  "merges": [
-    {
-      "group_ids": ["string (IDs of groups to merge together)"],
-      "merged_name": "string (name for the combined group)",
-      "reason": "string (why these groups are part of the same logical change)"
-    }
-  ],
-  "re_ranks": [
-    {
-      "group_id": "string (ID of group to re-rank)",
-      "new_position": "integer (1-based review position)",
-      "reason": "string (why this group should be reviewed at this position)"
-    }
-  ],
-  "reclassifications": [
-    {
-      "file": "string (file path to move)",
-      "from_group_id": "string (current group ID)",
-      "to_group_id": "string (target group ID, or 'infrastructure')",
-      "reason": "string (why this file belongs in the target group)"
-    }
-  ],
-  "reasoning": "string (overall explanation of refinement decisions)"
-}
-
-Guidelines:
-- Only suggest operations where the deterministic grouping is clearly wrong
-- Splits: use when a group contains logically unrelated changes (e.g., a refactor mixed with a feature)
-- Merges: use when separate groups are actually part of the same logical change (e.g., scattered refactor)
-- Re-ranks: use when semantic review ordering differs from risk-based ordering (e.g., schema should be reviewed before handler)
-- Reclassifications: use when static reachability assigned a file to the wrong group
-- If no refinements are needed, return empty arrays for all operations
-- Every file mentioned in splits/reclassifications must exist in the original groups
-- Group names MUST be descriptive: e.g. 'media asset upload pipeline' not 'page test flow'. Names should describe the domain/feature and the nature of the change
-
-ID fields — STRICT:
-- `source_group_id`, `group_ids`, `from_group_id`, and `to_group_id` MUST be literal group IDs (e.g. `group_1`, `group_2`) from the input, or the literal string `infrastructure`.
-- NEVER use a group's descriptive name (`name` field) in an ID position. IDs and names are different fields.
-- If you want to route a file to a newly-created group, create that group via a `split` operation — do NOT invent a new ID in `to_group_id`."#
-}
-
 /// Generate the JSON schema description for Pass 2 structured output.
 pub fn pass2_schema_description() -> &'static str {
     r#"Respond with a JSON object matching this exact schema:
@@ -485,11 +327,6 @@ pub fn pass2_json_schema() -> serde_json::Value {
 /// Generate the JSON Schema for JudgeResponse.
 pub fn judge_json_schema() -> serde_json::Value {
     serde_json::to_value(schemars::schema_for!(JudgeResponse)).unwrap_or_default()
-}
-
-/// Generate the JSON Schema for RefinementResponse.
-pub fn refinement_json_schema() -> serde_json::Value {
-    serde_json::to_value(schemars::schema_for!(RefinementResponse)).unwrap_or_default()
 }
 
 /// Generate the JSON schema description for the group metadata pass.
@@ -970,189 +807,6 @@ mod tests {
         assert_eq!(parsed["source_files"].as_array().unwrap().len(), 3);
     }
 
-    // ── Refinement Schema Tests ──
-
-    #[test]
-    fn test_refinement_request_roundtrip() {
-        let request = RefinementRequest {
-            analysis_json: r#"{"version":"1.0.0"}"#.to_string(),
-            diff_summary: "10 files changed".to_string(),
-            groups: vec![RefinementGroupInput {
-                id: "group_1".to_string(),
-                name: "Auth flow".to_string(),
-                entrypoint: Some("src/auth.ts::login".to_string()),
-                files: vec!["src/auth.ts".to_string(), "src/token.ts".to_string()],
-                risk_score: 0.75,
-                review_order: 1,
-            }],
-            infrastructure_files: vec!["package.json".to_string()],
-        };
-        let json = serde_json::to_string(&request).unwrap();
-        let deserialized: RefinementRequest = serde_json::from_str(&json).unwrap();
-        assert_eq!(request, deserialized);
-    }
-
-    #[test]
-    fn test_refinement_response_roundtrip() {
-        let response = RefinementResponse {
-            splits: vec![RefinementSplit {
-                source_group_id: "group_1".to_string(),
-                new_groups: vec![
-                    RefinementNewGroup {
-                        name: "Auth login".to_string(),
-                        files: vec!["src/auth.ts".to_string()],
-                    },
-                    RefinementNewGroup {
-                        name: "Token refresh".to_string(),
-                        files: vec!["src/token.ts".to_string()],
-                    },
-                ],
-                reason: "Login and token refresh are independent changes".to_string(),
-            }],
-            merges: vec![RefinementMerge {
-                group_ids: vec!["group_2".to_string(), "group_3".to_string()],
-                merged_name: "Database migration".to_string(),
-                reason: "Both groups modify the same schema".to_string(),
-            }],
-            re_ranks: vec![RefinementReRank {
-                group_id: "group_4".to_string(),
-                new_position: 1,
-                reason: "Schema changes should be reviewed first".to_string(),
-            }],
-            reclassifications: vec![RefinementReclassify {
-                file: "src/utils.ts".to_string(),
-                from_group_id: "group_1".to_string(),
-                to_group_id: "group_2".to_string(),
-                reason: "This utility is primarily used by group_2".to_string(),
-            }],
-            reasoning: "Separated unrelated changes and prioritized schema review".to_string(),
-        };
-        let json = serde_json::to_string(&response).unwrap();
-        let deserialized: RefinementResponse = serde_json::from_str(&json).unwrap();
-        assert_eq!(response, deserialized);
-    }
-
-    #[test]
-    fn test_refinement_response_empty_operations() {
-        let response = RefinementResponse {
-            splits: vec![],
-            merges: vec![],
-            re_ranks: vec![],
-            reclassifications: vec![],
-            reasoning: "No refinements needed".to_string(),
-        };
-        let json = serde_json::to_string(&response).unwrap();
-        let deserialized: RefinementResponse = serde_json::from_str(&json).unwrap();
-        assert_eq!(response, deserialized);
-        assert!(deserialized.splits.is_empty());
-        assert!(deserialized.merges.is_empty());
-        assert!(deserialized.re_ranks.is_empty());
-        assert!(deserialized.reclassifications.is_empty());
-    }
-
-    #[test]
-    fn test_refinement_split_multiple_new_groups() {
-        let split = RefinementSplit {
-            source_group_id: "group_1".to_string(),
-            new_groups: vec![
-                RefinementNewGroup {
-                    name: "Sub-group A".to_string(),
-                    files: vec!["a.ts".to_string(), "b.ts".to_string()],
-                },
-                RefinementNewGroup {
-                    name: "Sub-group B".to_string(),
-                    files: vec!["c.ts".to_string()],
-                },
-                RefinementNewGroup {
-                    name: "Sub-group C".to_string(),
-                    files: vec!["d.ts".to_string(), "e.ts".to_string()],
-                },
-            ],
-            reason: "Three unrelated changes bundled together".to_string(),
-        };
-        let json = serde_json::to_string(&split).unwrap();
-        let deser: RefinementSplit = serde_json::from_str(&json).unwrap();
-        assert_eq!(deser.new_groups.len(), 3);
-        assert_eq!(deser.new_groups.iter().flat_map(|g| &g.files).count(), 5);
-    }
-
-    #[test]
-    fn test_refinement_merge_multiple_groups() {
-        let merge = RefinementMerge {
-            group_ids: vec![
-                "group_1".to_string(),
-                "group_2".to_string(),
-                "group_3".to_string(),
-            ],
-            merged_name: "Combined refactor".to_string(),
-            reason: "All three groups are part of the same rename refactor".to_string(),
-        };
-        let json = serde_json::to_string(&merge).unwrap();
-        let deser: RefinementMerge = serde_json::from_str(&json).unwrap();
-        assert_eq!(deser.group_ids.len(), 3);
-    }
-
-    #[test]
-    fn test_refinement_schema_description_not_empty() {
-        let desc = refinement_schema_description();
-        assert!(!desc.is_empty());
-        assert!(desc.contains("splits"));
-        assert!(desc.contains("merges"));
-        assert!(desc.contains("re_ranks"));
-        assert!(desc.contains("reclassifications"));
-        assert!(desc.contains("reasoning"));
-        assert!(desc.contains("source_group_id"));
-        assert!(desc.contains("new_groups"));
-        assert!(desc.contains("group_ids"));
-        assert!(desc.contains("merged_name"));
-        assert!(desc.contains("new_position"));
-        assert!(desc.contains("from_group_id"));
-        assert!(desc.contains("to_group_id"));
-    }
-
-    #[test]
-    fn test_refinement_request_multiple_groups() {
-        let request = RefinementRequest {
-            analysis_json: "{}".to_string(),
-            diff_summary: "diff".to_string(),
-            groups: vec![
-                RefinementGroupInput {
-                    id: "g1".to_string(),
-                    name: "Group 1".to_string(),
-                    entrypoint: Some("entry1".to_string()),
-                    files: vec!["a.ts".to_string()],
-                    risk_score: 0.8,
-                    review_order: 1,
-                },
-                RefinementGroupInput {
-                    id: "g2".to_string(),
-                    name: "Group 2".to_string(),
-                    entrypoint: None,
-                    files: vec!["b.ts".to_string(), "c.ts".to_string()],
-                    risk_score: 0.4,
-                    review_order: 2,
-                },
-            ],
-            infrastructure_files: vec![],
-        };
-        let json = serde_json::to_string(&request).unwrap();
-        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed["groups"].as_array().unwrap().len(), 2);
-    }
-
-    #[test]
-    fn test_refinement_reclassify_to_infrastructure() {
-        let reclass = RefinementReclassify {
-            file: "src/config.ts".to_string(),
-            from_group_id: "group_1".to_string(),
-            to_group_id: "infrastructure".to_string(),
-            reason: "Config file is shared infrastructure, not part of the auth flow".to_string(),
-        };
-        let json = serde_json::to_string(&reclass).unwrap();
-        let deser: RefinementReclassify = serde_json::from_str(&json).unwrap();
-        assert_eq!(deser.to_group_id, "infrastructure");
-    }
-
     #[test]
     fn test_judge_response_all_criteria() {
         let criteria_names = vec![
@@ -1215,23 +869,10 @@ mod tests {
     }
 
     #[test]
-    fn test_refinement_json_schema_valid() {
-        let schema = refinement_json_schema();
-        assert!(schema.is_object());
-        let schema_str = serde_json::to_string(&schema).unwrap();
-        assert!(schema_str.contains("splits"));
-        assert!(schema_str.contains("merges"));
-        assert!(schema_str.contains("re_ranks"));
-        assert!(schema_str.contains("reclassifications"));
-        assert!(schema_str.contains("reasoning"));
-    }
-
-    #[test]
     fn test_json_schemas_are_deterministic() {
         assert_eq!(pass1_json_schema(), pass1_json_schema());
         assert_eq!(pass2_json_schema(), pass2_json_schema());
         assert_eq!(judge_json_schema(), judge_json_schema());
-        assert_eq!(refinement_json_schema(), refinement_json_schema());
     }
 
     // ── Schema Flattening Tests (OpenAI + Gemini compatibility) ──
@@ -1317,37 +958,18 @@ mod tests {
     }
 
     #[test]
-    fn test_flatten_refinement_schema() {
-        let schema = flatten_json_schema(refinement_json_schema());
-        assert_no_refs(&schema, "refinement");
-        assert_additional_properties_false(&schema, "refinement");
-        let props = schema["properties"].as_object().unwrap();
-        assert!(props.contains_key("splits"));
-        assert!(props.contains_key("merges"));
-        assert!(props.contains_key("re_ranks"));
-        assert!(props.contains_key("reclassifications"));
-        assert!(props.contains_key("reasoning"));
-    }
-
-    #[test]
     fn test_flatten_inlines_nested_refs() {
-        // RefinementResponse has nested types (RefinementSplit -> RefinementNewGroup)
-        // Verify the nested objects are fully inlined
-        let schema = flatten_json_schema(refinement_json_schema());
-        let splits_items = &schema["properties"]["splits"]["items"];
+        // Pass2Response has a nested type (Pass2FileAnnotation).
+        // Verify the nested object is fully inlined.
+        let schema = flatten_json_schema(pass2_json_schema());
+        let items = &schema["properties"]["file_annotations"]["items"];
         // Should be an inlined object, not a $ref
         assert_eq!(
-            splits_items.get("type").and_then(|t| t.as_str()),
+            items.get("type").and_then(|t| t.as_str()),
             Some("object"),
-            "splits.items should be an inlined object, not a $ref"
+            "file_annotations.items should be an inlined object, not a $ref"
         );
-        // new_groups inside splits should also be inlined
-        let new_groups_items = &splits_items["properties"]["new_groups"]["items"];
-        assert_eq!(
-            new_groups_items.get("type").and_then(|t| t.as_str()),
-            Some("object"),
-            "splits.items.new_groups.items should be an inlined object"
-        );
+        assert!(items["properties"].get("role_in_flow").is_some());
     }
 
     #[test]
@@ -1364,13 +986,13 @@ mod tests {
         let p1 = pass1_json_schema();
         let p2 = pass2_json_schema();
         let j = judge_json_schema();
-        let r = refinement_json_schema();
+        let m = metadata_json_schema();
         assert_ne!(p1, p2);
         assert_ne!(p1, j);
-        assert_ne!(p1, r);
+        assert_ne!(p1, m);
         assert_ne!(p2, j);
-        assert_ne!(p2, r);
-        assert_ne!(j, r);
+        assert_ne!(p2, m);
+        assert_ne!(j, m);
     }
 
     #[test]

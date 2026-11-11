@@ -225,14 +225,11 @@ export interface Annotations {
 /** LLM settings for the settings panel. */
 export interface LlmSettings {
   annotations_enabled: boolean;
-  refinement_enabled: boolean;
   metadata_enabled: boolean;
   provider: string;
   model: string;
   api_key_source: string;
   has_api_key: boolean;
-  refinement_provider: string;
-  refinement_model: string;
   global_config_path: string;
   api_key_in_config: boolean;
   codex_available: boolean;
@@ -275,56 +272,6 @@ export interface LlmActivityJob {
   provider: string;
   model: string;
   title: string;
-}
-
-// ── LLM Refinement Types ──
-
-/** Result of an LLM refinement pass. */
-export interface RefinementResult {
-  refined_groups: FlowGroup[];
-  infrastructure_group: InfrastructureGroup | null;
-  refinement_response: RefinementResponse;
-  provider: string;
-  model: string;
-  had_changes: boolean;
-}
-
-/** Raw refinement response with structural operations. */
-export interface RefinementResponse {
-  splits: RefinementSplit[];
-  merges: RefinementMerge[];
-  re_ranks: RefinementReRank[];
-  reclassifications: RefinementReclassify[];
-  reasoning: string;
-}
-
-/** Split operation: one group becomes multiple. */
-export interface RefinementSplit {
-  source_group_id: string;
-  new_groups: { name: string; files: string[] }[];
-  reason: string;
-}
-
-/** Merge operation: multiple groups become one. */
-export interface RefinementMerge {
-  group_ids: string[];
-  merged_name: string;
-  reason: string;
-}
-
-/** Re-rank operation: change a group's review position. */
-export interface RefinementReRank {
-  group_id: string;
-  new_position: number;
-  reason: string;
-}
-
-/** Reclassify operation: move a file between groups. */
-export interface RefinementReclassify {
-  file: string;
-  from_group_id: string;
-  to_group_id: string;
-  reason: string;
 }
 
 // ── Review Comment Types ──

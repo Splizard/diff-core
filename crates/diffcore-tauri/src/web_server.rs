@@ -193,17 +193,9 @@ async fn invoke(
             let url = req(&mut args, "url")?;
             return ok(commands::resolve_pr_url(url).await?).map(Json);
         }
-        "cancel_refine_groups" => {
-            let job_id = req(&mut args, "jobId")?;
-            return ok(commands::cancel_refine_groups(job_id, State(&state.app)).await?).map(Json);
-        }
         "annotate_overview" => {
             let (a, b, c) = llm_args(&mut args)?;
             return ok(commands::annotate_overview(a, b, c, State(&state.app)).await?).map(Json);
-        }
-        "refine_groups" => {
-            let (a, b, c) = llm_args(&mut args)?;
-            return ok(commands::refine_groups(a, b, c, State(&state.app)).await?).map(Json);
         }
         "describe_groups" => {
             let (a, _, _) = llm_args(&mut args)?;
@@ -316,10 +308,6 @@ fn dispatch_sync(cmd: &str, args: &mut Args, app: &AppState) -> Result<Value, In
             let (a, b, c) = llm_args(args)?;
             ok(commands::start_annotate_overview(a, b, c, state)?)
         }
-        "start_refine_groups" => {
-            let (a, b, c) = llm_args(args)?;
-            ok(commands::start_refine_groups(a, b, c, state)?)
-        }
         "start_annotate_group" => {
             let group_id = req(args, "groupId")?;
             let d = diff_args(args)?;
@@ -338,15 +326,6 @@ fn dispatch_sync(cmd: &str, args: &mut Args, app: &AppState) -> Result<Value, In
                 state,
             )?)
         }
-        "get_cached_refinement" => ok(commands::get_cached_refinement(
-            opt(args, "repoPath")?,
-            state,
-        )?),
-        "store_refinement_cache" => ok(commands::store_refinement_cache(
-            req(args, "result")?,
-            opt(args, "repoPath")?,
-            state,
-        )?),
         "list_branches" => ok(commands::list_branches(req(args, "repoPath")?)?),
         "list_worktrees" => ok(commands::list_worktrees(req(args, "repoPath")?)?),
         "get_branch_status" => ok(commands::get_branch_status(req(args, "repoPath")?)?),

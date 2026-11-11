@@ -302,62 +302,26 @@ pub struct LlmConfig {
     /// Whether LLM annotations are enabled (default: true).
     #[serde(default = "default_true")]
     pub annotations_enabled: bool,
-    /// Optional LLM refinement pass configuration.
-    #[serde(default)]
-    pub refinement: RefinementConfig,
     /// Optional LLM group metadata pass configuration.
     #[serde(default)]
     pub metadata: MetadataConfig,
 }
 
-/// Configuration for the optional LLM refinement pass.
-///
-/// The refinement pass takes deterministic groups (v1) and asks an LLM to improve them:
-/// split coincidental groupings, merge scattered refactors, re-rank by semantic review
-/// order, reclassify misplaced files. It is a single pass — the response is either
-/// applied or discarded, leaving the deterministic groups in place.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct RefinementConfig {
-    /// Whether refinement is enabled (default: true).
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-    /// Provider for refinement (can differ from annotation provider).
-    #[serde(default)]
-    pub provider: Option<String>,
-    /// Model for refinement (user-selectable).
-    #[serde(default)]
-    pub model: Option<String>,
-    /// Shell command to retrieve the refinement API key.
-    #[serde(default)]
-    pub key_cmd: Option<String>,
-}
-
-impl Default for RefinementConfig {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            provider: None,
-            model: None,
-            key_cmd: None,
-        }
-    }
-}
-
 /// Configuration for the optional LLM group metadata pass.
 ///
-/// The metadata pass runs on the *final* groups — after refinement, if refinement
-/// ran — and fills in the review metadata a reviewer glances at: group type, risk
-/// band, impact scope, review complexity, review focus, a one-line description, and
-/// the invariant to verify. It never writes `risk_score`.
+/// The metadata pass runs on the *final* groups and fills in the review metadata a
+/// reviewer glances at: group type, risk band, impact scope, review complexity,
+/// review focus, a one-line description, and the invariant to verify. It never
+/// writes `risk_score`.
 ///
 /// It gets its own provider/model because writing a one-line invariant is a much
-/// cheaper task than the structural reasoning refinement does.
+/// cheaper task than deep analysis, so a smaller model can serve it.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct MetadataConfig {
     /// Whether the metadata pass is enabled (default: true).
     #[serde(default = "default_true")]
     pub enabled: bool,
-    /// Provider for the metadata pass (can differ from the refinement provider).
+    /// Provider for the metadata pass (can differ from the annotation provider).
     #[serde(default)]
     pub provider: Option<String>,
     /// Model for the metadata pass (user-selectable).
@@ -400,7 +364,6 @@ impl Default for LlmConfig {
             key_cmd: None,
             key: None,
             annotations_enabled: true,
-            refinement: RefinementConfig::default(),
             metadata: MetadataConfig::default(),
         }
     }
@@ -539,18 +502,6 @@ impl DiffcoreConfig {
             }
         }
 
-        // Validate refinement provider if specified
-        if let Some(ref provider) = self.llm.refinement.provider {
-            let valid = ["anthropic", "openai", "gemini", "codex", "claude"];
-            if !valid.contains(&provider.as_str()) {
-                return Err(ConfigError::Validation(format!(
-                    "Unknown refinement provider '{}'. Valid providers: {}",
-                    provider,
-                    valid.join(", ")
-                )));
-            }
-        }
-
         // Validate metadata provider if specified
         if let Some(ref provider) = self.llm.metadata.provider {
             let valid = ["anthropic", "openai", "gemini", "codex", "claude"];
@@ -678,26 +629,6 @@ impl DiffcoreConfig {
             .clone()
             .or_else(|| global.llm.key_cmd.clone());
         self.llm.key = self.llm.key.clone().or_else(|| global.llm.key.clone());
-
-        self.llm.refinement.enabled = self.llm.refinement.enabled || global.llm.refinement.enabled;
-        self.llm.refinement.provider = self
-            .llm
-            .refinement
-            .provider
-            .clone()
-            .or_else(|| global.llm.refinement.provider.clone());
-        self.llm.refinement.model = self
-            .llm
-            .refinement
-            .model
-            .clone()
-            .or_else(|| global.llm.refinement.model.clone());
-        self.llm.refinement.key_cmd = self
-            .llm
-            .refinement
-            .key_cmd
-            .clone()
-            .or_else(|| global.llm.refinement.key_cmd.clone());
 
         self.llm.metadata.enabled = self.llm.metadata.enabled || global.llm.metadata.enabled;
         self.llm.metadata.provider = self
@@ -874,7 +805,7 @@ uncertainty = 0.0
 provider = "codex"
 model = "default"
 
-[llm.refinement]
+[llm.metadata]
 enabled = true
 provider = "claude"
 model = "default"
@@ -899,8 +830,8 @@ paths = ["dist/**"]
         assert_eq!(merged.ignore.paths, vec!["dist/**"]);
         assert_eq!(merged.llm.provider, Some("codex".to_string()));
         assert_eq!(merged.llm.model, Some("default".to_string()));
-        assert!(merged.llm.refinement.enabled);
-        assert_eq!(merged.llm.refinement.provider, Some("claude".to_string()));
+        assert!(merged.llm.metadata.enabled);
+        assert_eq!(merged.llm.metadata.provider, Some("claude".to_string()));
     }
 
     #[test]
@@ -1235,60 +1166,31 @@ events = ["src/handlers/events/**/*.ts"]
         assert_eq!(config.layer_for_path("src/anything.ts"), None);
     }
 
-    // ── Refinement Config Tests ──
+    // ── Legacy Config Tests ──
 
     #[test]
-    fn test_refinement_config_defaults() {
-        let config = DiffcoreConfig::default();
-        assert!(config.llm.refinement.enabled);
-        assert_eq!(config.llm.refinement.provider, None);
-        assert_eq!(config.llm.refinement.model, None);
-        assert_eq!(config.llm.refinement.key_cmd, None);
-    }
-
-    #[test]
-    fn test_parse_refinement_config() {
+    fn test_legacy_refinement_section_is_ignored() {
+        // Older configs may still carry an `[llm.refinement]` section from when
+        // the LLM refinement pass existed. It must parse without error, and an
+        // otherwise-invalid provider there must not fail validation.
         let toml_str = r#"
 [llm]
 provider = "anthropic"
 
 [llm.refinement]
 enabled = true
-provider = "openai"
+provider = "not-a-provider"
 model = "gpt-4.1"
+key_cmd = "echo key"
 "#;
         let config = DiffcoreConfig::from_str(toml_str).unwrap();
-        assert!(config.llm.refinement.enabled);
-        assert_eq!(config.llm.refinement.provider, Some("openai".to_string()));
-        assert_eq!(config.llm.refinement.model, Some("gpt-4.1".to_string()));
-    }
-
-    #[test]
-    fn test_refinement_enabled_by_default() {
-        let toml_str = r#"
-[llm]
-provider = "anthropic"
-"#;
-        let config = DiffcoreConfig::from_str(toml_str).unwrap();
-        assert!(config.llm.refinement.enabled);
-    }
-
-    #[test]
-    fn test_refinement_invalid_provider_rejected() {
-        let toml_str = r#"
-[llm.refinement]
-enabled = true
-provider = "invalid"
-"#;
-        let result = DiffcoreConfig::from_str(toml_str);
-        assert!(result.is_err());
-        match result.unwrap_err() {
-            ConfigError::Validation(msg) => {
-                assert!(msg.contains("refinement provider"));
-                assert!(msg.contains("invalid"));
+        assert_eq!(
+            config.llm,
+            LlmConfig {
+                provider: Some("anthropic".to_string()),
+                ..LlmConfig::default()
             }
-            err => panic!("Expected validation error, got: {:?}", err),
-        }
+        );
     }
 
     // ── Metadata Config Tests ──
@@ -1368,20 +1270,16 @@ batch_size = 0
     }
 
     #[test]
-    fn test_metadata_provider_independent_of_refinement() {
+    fn test_metadata_provider_independent_of_annotation() {
         let toml_str = r#"
 [llm]
 provider = "anthropic"
-
-[llm.refinement]
-provider = "openai"
 
 [llm.metadata]
 provider = "gemini"
 "#;
         let config = DiffcoreConfig::from_str(toml_str).unwrap();
         assert_eq!(config.llm.provider, Some("anthropic".to_string()));
-        assert_eq!(config.llm.refinement.provider, Some("openai".to_string()));
         assert_eq!(config.llm.metadata.provider, Some("gemini".to_string()));
     }
 
@@ -1416,38 +1314,6 @@ provider = "gemini"
 
         assert_eq!(local.llm.metadata.provider, Some("openai".to_string()));
         assert_eq!(local.llm.metadata.batch_size, 3);
-    }
-
-    #[test]
-    fn test_refinement_different_provider_from_annotation() {
-        let toml_str = r#"
-[llm]
-provider = "anthropic"
-model = "claude-sonnet-4-6"
-
-[llm.refinement]
-enabled = true
-provider = "gemini"
-model = "gemini-2.5-pro"
-"#;
-        let config = DiffcoreConfig::from_str(toml_str).unwrap();
-        assert_eq!(config.llm.provider, Some("anthropic".to_string()));
-        assert_eq!(config.llm.refinement.provider, Some("gemini".to_string()));
-    }
-
-    #[test]
-    fn test_refinement_key_cmd() {
-        let toml_str = r#"
-[llm.refinement]
-enabled = true
-provider = "anthropic"
-key_cmd = "op read op://vault/diffcore/refinement-key"
-"#;
-        let config = DiffcoreConfig::from_str(toml_str).unwrap();
-        assert_eq!(
-            config.llm.refinement.key_cmd,
-            Some("op read op://vault/diffcore/refinement-key".to_string())
-        );
     }
 
     // ── Property-Based Tests ──
@@ -1604,26 +1470,10 @@ annotations_enabled = true
     }
 
     #[test]
-    fn test_refinement_enabled_defaults_true_in_llm_config() {
-        let config = LlmConfig::default();
-        assert!(config.refinement.enabled);
-    }
-
-    #[test]
-    fn test_refinement_enabled_explicit_false_overrides_default() {
-        let toml_str = r#"
-[llm.refinement]
-enabled = false
-"#;
-        let config = DiffcoreConfig::from_str(toml_str).unwrap();
-        assert!(!config.llm.refinement.enabled);
-    }
-
-    #[test]
     fn test_both_defaults_true_on_empty_config() {
         let config = DiffcoreConfig::default();
         assert!(config.llm.annotations_enabled, "annotations should default to true");
-        assert!(config.llm.refinement.enabled, "refinement should default to true");
+        assert!(config.llm.metadata.enabled, "metadata should default to true");
     }
 
     #[test]
@@ -1631,33 +1481,7 @@ enabled = false
         let toml_str = "";
         let config = DiffcoreConfig::from_str(toml_str).unwrap();
         assert!(config.llm.annotations_enabled, "annotations should default to true");
-        assert!(config.llm.refinement.enabled, "refinement should default to true");
-    }
-
-    #[test]
-    fn test_annotations_and_refinement_independent() {
-        // Can enable one and disable the other
-        let toml_str = r#"
-[llm]
-annotations_enabled = false
-
-[llm.refinement]
-enabled = true
-"#;
-        let config = DiffcoreConfig::from_str(toml_str).unwrap();
-        assert!(!config.llm.annotations_enabled);
-        assert!(config.llm.refinement.enabled);
-
-        let toml_str2 = r#"
-[llm]
-annotations_enabled = true
-
-[llm.refinement]
-enabled = false
-"#;
-        let config2 = DiffcoreConfig::from_str(toml_str2).unwrap();
-        assert!(config2.llm.annotations_enabled);
-        assert!(!config2.llm.refinement.enabled);
+        assert!(config.llm.metadata.enabled, "metadata should default to true");
     }
 
     #[test]
@@ -1670,10 +1494,6 @@ annotations_enabled = false
         let global = DiffcoreConfig::from_str(r#"
 [llm]
 provider = "anthropic"
-
-[llm.refinement]
-enabled = true
-provider = "openai"
 "#).unwrap();
 
         local.apply_global_llm_defaults(&global);
@@ -1682,8 +1502,6 @@ provider = "openai"
         assert!(!local.llm.annotations_enabled);
         // Global provider should fill in missing local
         assert_eq!(local.llm.provider, Some("anthropic".to_string()));
-        // Refinement from either local (default true) or global should be true
-        assert!(local.llm.refinement.enabled);
     }
 
     /// The whole global-config surface in one test.
@@ -1726,7 +1544,7 @@ provider = "openai"
         // 3. Saving writes to the XDG path and leaves the legacy file alone.
         let mut config = loaded;
         config.llm.annotations_enabled = false;
-        config.llm.refinement.enabled = false;
+        config.llm.metadata.enabled = false;
         config.save_global().unwrap();
 
         assert!(xdg.path().join("config.toml").exists());
@@ -1738,7 +1556,7 @@ provider = "openai"
         // 4. Everything survives the round trip, and XDG now wins over legacy.
         let loaded = DiffcoreConfig::load_global().unwrap();
         assert!(!loaded.llm.annotations_enabled);
-        assert!(!loaded.llm.refinement.enabled);
+        assert!(!loaded.llm.metadata.enabled);
         assert_eq!(loaded.llm.key.as_deref(), Some("sk-legacy"));
 
         // 5. UI prefs round-trip through their own file, untouched by the above.

@@ -21,9 +21,7 @@ use diffcore_core::config::LlmConfig;
 use diffcore_core::llm;
 use diffcore_core::llm::ActivityUpdate;
 use diffcore_core::llm::LlmProvider;
-use helpers::llm_helpers::{
-    load_env, sample_pass1_request, sample_refinement_request, should_run_live,
-};
+use helpers::llm_helpers::{load_env, sample_pass1_request, should_run_live};
 
 fn repo_root() -> PathBuf {
     let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -48,32 +46,6 @@ async fn capture_cli_activity(
         async move {
             provider
                 .annotate_overview(&sample_pass1_request())
-                .await
-                .unwrap()
-        },
-    )
-    .await;
-
-    let updates = updates.lock().unwrap().clone();
-    (response, updates)
-}
-
-async fn capture_cli_refinement_activity(
-    provider: Box<dyn LlmProvider>,
-) -> (
-    diffcore_core::llm::schema::RefinementResponse,
-    Vec<ActivityUpdate>,
-) {
-    let updates: Arc<Mutex<Vec<ActivityUpdate>>> = Arc::new(Mutex::new(Vec::new()));
-    let updates_for_callback = Arc::clone(&updates);
-
-    let response = llm::with_activity_callback(
-        Arc::new(move |update| {
-            updates_for_callback.lock().unwrap().push(update);
-        }),
-        async move {
-            provider
-                .refine_groups(&sample_refinement_request())
                 .await
                 .unwrap()
         },
@@ -191,92 +163,6 @@ async fn test_live_claude_cli_activity_stream() {
         updates
             .iter()
             .map(|update| update.message.clone())
-            .collect::<Vec<_>>()
-    );
-}
-
-#[tokio::test]
-async fn test_live_codex_cli_refinement_stream() {
-    if !should_run_live() {
-        eprintln!("Skipping live Codex CLI refinement test (set DIFFCORE_RUN_LIVE_LLM_TESTS=1 to run)");
-        return;
-    }
-    load_env();
-
-    let status = llm::codex_cli::detect_status();
-    if !status.authenticated {
-        eprintln!(
-            "Skipping Codex CLI refinement test (Codex CLI not installed or not logged in)"
-        );
-        return;
-    }
-
-    let config = LlmConfig {
-        provider: Some("codex".to_string()),
-        model: Some("default".to_string()),
-        ..Default::default()
-    };
-    let provider = llm::create_provider_for_workdir(&config, Some(repo_root().as_path())).unwrap();
-
-    let (response, updates) = capture_cli_refinement_activity(provider).await;
-
-    assert!(
-        !response.reasoning.trim().is_empty(),
-        "Codex refinement should return reasoning"
-    );
-    assert!(
-        !updates.is_empty(),
-        "Codex refinement should emit activity updates while working"
-    );
-    assert!(
-        updates.iter().any(|update| update.source == "codex"),
-        "Expected Codex-sourced refinement updates, got: {:?}",
-        updates
-            .iter()
-            .map(|update| format!("{}: {}", update.source, update.message))
-            .collect::<Vec<_>>()
-    );
-}
-
-#[tokio::test]
-async fn test_live_claude_cli_refinement_stream() {
-    if !should_run_live() {
-        eprintln!("Skipping live Claude Code refinement test (set DIFFCORE_RUN_LIVE_LLM_TESTS=1 to run)");
-        return;
-    }
-    load_env();
-
-    let status = llm::claude_cli::detect_status();
-    if !status.authenticated {
-        eprintln!(
-            "Skipping Claude Code refinement test (Claude Code not installed or not logged in)"
-        );
-        return;
-    }
-
-    let config = LlmConfig {
-        provider: Some("claude".to_string()),
-        model: Some("default".to_string()),
-        ..Default::default()
-    };
-    let provider = llm::create_provider_for_workdir(&config, Some(repo_root().as_path())).unwrap();
-
-    let (response, updates) = capture_cli_refinement_activity(provider).await;
-
-    assert!(
-        !response.reasoning.trim().is_empty(),
-        "Claude refinement should return reasoning"
-    );
-    assert!(
-        !updates.is_empty(),
-        "Claude refinement should emit activity updates while working"
-    );
-    assert!(
-        updates.iter().any(|update| update.source == "claude"),
-        "Expected Claude-sourced refinement updates, got: {:?}",
-        updates
-            .iter()
-            .map(|update| format!("{}: {}", update.source, update.message))
             .collect::<Vec<_>>()
     );
 }

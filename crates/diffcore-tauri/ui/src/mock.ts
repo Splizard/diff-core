@@ -2,7 +2,7 @@
  * Mock data for demo mode — used when running outside Tauri (browser dev/Playwright).
  * Provides realistic fixture data so all UI states can be exercised without IPC.
  */
-import type { AnalysisOutput, FileDiffContent, LlmSettings, Pass1Response, Pass2Response, RefinementResult, RepoInfo,
+import type { AnalysisOutput, FileDiffContent, LlmSettings, Pass1Response, Pass2Response, RepoInfo,
   ResolvedPr,
 } from "./types";
 
@@ -616,210 +616,13 @@ export const MOCK_PASS2: Record<string, Pass2Response> = {
   },
 };
 
-export const MOCK_REFINEMENT: RefinementResult = {
-  refined_groups: [
-    {
-      id: "group_1",
-      name: "User creation API with validation and persistence",
-      entrypoint: {
-        file: "src/routes/users.ts",
-        symbol: "POST /api/users",
-        entrypoint_type: "HttpRoute",
-      },
-      files: [
-        {
-          path: "src/routes/users.ts",
-          flow_position: 0,
-          role: "Entrypoint",
-          changes: { additions: 35, deletions: 8 },
-          symbols_changed: ["createUser", "validateInput"],
-        },
-        {
-          path: "src/services/user-service.ts",
-          flow_position: 1,
-          role: "Service",
-          changes: { additions: 42, deletions: 15 },
-          symbols_changed: ["UserService.create", "UserService.validate"],
-        },
-        {
-          path: "src/repositories/user-repo.ts",
-          flow_position: 2,
-          role: "Repository",
-          changes: { additions: 18, deletions: 3 },
-          symbols_changed: ["UserRepository.insert"],
-        },
-      ],
-      edges: [
-        { from: "src/routes/users.ts::createUser", to: "src/services/user-service.ts::UserService.create", edge_type: "Calls" },
-        { from: "src/services/user-service.ts::UserService.create", to: "src/repositories/user-repo.ts::UserRepository.insert", edge_type: "Calls" },
-      ],
-      risk_score: 0.82,
-      review_order: 1,
-      group_type: "Feat",
-      description: "Add user creation with validation and a persisted audit trail.",
-      risk: "High",
-      impact: "CrossCutting",
-      complexity: "Complex",
-      review_focus: ["Correctness", "Security", "DataIntegrity"],
-      summary: [
-        "Validates the POST /api/users payload before it reaches the service layer.",
-        "Rejects duplicate emails with a 409 instead of surfacing a Prisma constraint error.",
-        "Writes the user row and its audit entry together so neither can land alone.",
-      ],
-      invariant: "A user row and its audit entry must be written in the same transaction.",
-    },
-    {
-      id: "group_refined_1",
-      name: "User data model definitions",
-      entrypoint: null,
-      files: [
-        {
-          path: "src/models/user.ts",
-          flow_position: 0,
-          role: "Model",
-          changes: { additions: 12, deletions: 0 },
-          symbols_changed: ["User", "CreateUserInput"],
-        },
-      ],
-      edges: [],
-      risk_score: 0.3,
-      review_order: 2,
-      group_type: "Refactor",
-      risk: "Low",
-      impact: "Local",
-      review_focus: [],
-    },
-    {
-      id: "group_2",
-      name: "Auth token refresh with rotation and rate limiting",
-      entrypoint: {
-        file: "src/routes/auth.ts",
-        symbol: "GET /api/auth/refresh",
-        entrypoint_type: "HttpRoute",
-      },
-      files: [
-        {
-          path: "src/routes/auth.ts",
-          flow_position: 0,
-          role: "Entrypoint",
-          changes: { additions: 28, deletions: 12 },
-          symbols_changed: ["refreshToken", "validateRefreshToken"],
-        },
-        {
-          path: "src/services/auth-service.ts",
-          flow_position: 1,
-          role: "Service",
-          changes: { additions: 55, deletions: 20 },
-          symbols_changed: ["AuthService.refresh", "AuthService.rotateToken"],
-        },
-        {
-          path: "src/middleware/rate-limit.ts",
-          flow_position: 2,
-          role: "Utility",
-          changes: { additions: 8, deletions: 2 },
-          symbols_changed: ["rateLimiter"],
-        },
-      ],
-      edges: [
-        { from: "src/routes/auth.ts::refreshToken", to: "src/services/auth-service.ts::AuthService.refresh", edge_type: "Calls" },
-      ],
-      risk_score: 0.74,
-      review_order: 3,
-      group_type: "Fix",
-      description: "Move refresh-token rotation behind the rate limiter.",
-      risk: "Critical",
-      impact: "Module",
-      complexity: "Moderate",
-      review_focus: ["Security", "Concurrency"],
-      summary: [
-        "Rotates refresh tokens on use and rate-limits the refresh endpoint.",
-      ],
-      invariant: "A refresh token must never be accepted twice after rotation.",
-    },
-    {
-      id: "group_3",
-      name: "Email notification worker",
-      entrypoint: {
-        file: "src/workers/email-worker.ts",
-        symbol: "processEmailQueue",
-        entrypoint_type: "QueueConsumer",
-      },
-      files: [
-        {
-          path: "src/workers/email-worker.ts",
-          flow_position: 0,
-          role: "Entrypoint",
-          changes: { additions: 20, deletions: 5 },
-          symbols_changed: ["processEmailQueue"],
-        },
-        {
-          path: "src/services/email-service.ts",
-          flow_position: 1,
-          role: "Service",
-          changes: { additions: 15, deletions: 8 },
-          symbols_changed: ["EmailService.send", "EmailService.formatTemplate"],
-        },
-      ],
-      edges: [
-        { from: "src/workers/email-worker.ts::processEmailQueue", to: "src/services/email-service.ts::EmailService.send", edge_type: "Calls" },
-      ],
-      risk_score: 0.35,
-      review_order: 4,
-      group_type: "Chore",
-      risk: "Low",
-      impact: "Local",
-      review_focus: [],
-    },
-  ],
-  infrastructure_group: {
-    files: ["tsconfig.json", "package.json", ".eslintrc.json"],
-    sub_groups: [
-      {
-        name: "Infrastructure",
-        category: "Infrastructure" as const,
-        files: ["tsconfig.json", "package.json"],
-      },
-      {
-        name: "Lint",
-        category: "Lint" as const,
-        files: [".eslintrc.json"],
-      },
-    ],
-    reason: "Not reachable from any detected entrypoint",
-  },
-  refinement_response: {
-    splits: [
-      {
-        source_group_id: "group_1",
-        new_groups: [
-          { name: "User creation API with validation and persistence", files: ["src/routes/users.ts", "src/services/user-service.ts", "src/repositories/user-repo.ts"] },
-          { name: "User data model definitions", files: ["src/models/user.ts"] },
-        ],
-        reason: "The User/CreateUserInput type definitions are pure data models used across multiple flows \u2014 separating them from the API handler chain makes the review clearer",
-      },
-    ],
-    merges: [],
-    re_ranks: [
-      { group_id: "group_2", new_position: 3, reason: "Review auth after user creation since it depends on user model" },
-    ],
-    reclassifications: [],
-    reasoning: "Split the user creation group to isolate pure type definitions. Re-ranked auth flow after user creation for dependency order.",
-  },
-  provider: "anthropic",
-  model: "claude-sonnet-4-6",
-  had_changes: true,
-};
-
 export const MOCK_LLM_SETTINGS: LlmSettings = {
   annotations_enabled: true,
-  refinement_enabled: true,
   metadata_enabled: true,
   provider: "codex",
   model: "default",
   api_key_source: "Codex CLI login",
   has_api_key: true,
-  refinement_provider: "claude",
-  refinement_model: "default",
   global_config_path: "~/.config/diffcore/config.toml",
   api_key_in_config: false,
   codex_available: true,

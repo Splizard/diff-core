@@ -22,10 +22,7 @@
 use diffcore_core::llm::anthropic::AnthropicProvider;
 use diffcore_core::llm::gemini::GeminiProvider;
 use diffcore_core::llm::openai::OpenAIProvider;
-use diffcore_core::llm::schema::{
-    Pass1GroupInput, Pass1Request, Pass2FileInput, Pass2Request, RefinementGroupInput,
-    RefinementRequest,
-};
+use diffcore_core::llm::schema::{Pass1GroupInput, Pass1Request, Pass2FileInput, Pass2Request};
 use diffcore_core::llm::{estimate_tokens, truncate_to_token_budget, LlmError, LlmProvider};
 use wiremock::matchers::method;
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -60,22 +57,6 @@ fn sample_pass2_request() -> Pass2Request {
             role: "Entrypoint".to_string(),
         }],
         graph_context: "auth -> token-service".to_string(),
-    }
-}
-
-fn sample_refinement_request() -> RefinementRequest {
-    RefinementRequest {
-        analysis_json: r#"{"version":"1.0.0"}"#.to_string(),
-        diff_summary: "5 files changed".to_string(),
-        groups: vec![RefinementGroupInput {
-            id: "group_1".to_string(),
-            name: "Auth flow".to_string(),
-            entrypoint: Some("src/auth.ts::login".to_string()),
-            files: vec!["src/auth.ts".to_string()],
-            risk_score: 0.75,
-            review_order: 1,
-        }],
-        infrastructure_files: vec![],
     }
 }
 
@@ -933,42 +914,6 @@ async fn test_openai_emoji_in_file_paths() {
     // The important thing is no panic occurred
 }
 
-#[tokio::test]
-async fn test_gemini_unicode_in_refinement_request() {
-    let server = MockServer::start().await;
-    Mock::given(method("POST"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_string(
-                r#"{"candidates": [{"content": {"parts": [{"text": "{\"splits\": [], \"merges\": [], \"re_ranks\": [], \"reclassifications\": [], \"reasoning\": \"No refinements needed\"}"}], "role": "model"}, "finishReason": "STOP"}]}"#,
-            ),
-        )
-        .mount(&server)
-        .await;
-
-    let request = RefinementRequest {
-        analysis_json: "{}".to_string(),
-        diff_summary: "Changé les fichiers français 🇫🇷".to_string(),
-        groups: vec![RefinementGroupInput {
-            id: "groupe_1".to_string(),
-            name: "Flux d'authentification 🔐".to_string(),
-            entrypoint: Some("src/auth_日本語.ts".to_string()),
-            files: vec!["src/données.ts".to_string(), "src/résultat.py".to_string()],
-            risk_score: 0.6,
-            review_order: 1,
-        }],
-        infrastructure_files: vec![],
-    };
-
-    let provider =
-        GeminiProvider::with_base_url("key".into(), "gemini-2.5-flash".into(), server.uri());
-    let result = provider.refine_groups(&request).await;
-    assert!(
-        result.is_ok(),
-        "Should handle unicode in refinement: {:?}",
-        result.err()
-    );
-}
-
 // ═══════════════════════════════════════════════════════════════
 // 8. API Error with Adversarial Content
 // ═══════════════════════════════════════════════════════════════
@@ -1216,7 +1161,7 @@ async fn test_gemini_valid_pass1_response() {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// 11. Pass2 / Refinement / Judge Error Paths
+// 11. Pass2 / Judge Error Paths
 // ═══════════════════════════════════════════════════════════════
 
 #[tokio::test]
@@ -1240,7 +1185,7 @@ async fn test_anthropic_pass2_rate_limit() {
 }
 
 #[tokio::test]
-async fn test_openai_refinement_auth_error() {
+async fn test_openai_pass2_auth_error() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .respond_with(ResponseTemplate::new(401))
@@ -1248,7 +1193,7 @@ async fn test_openai_refinement_auth_error() {
         .await;
 
     let provider = OpenAIProvider::with_base_url("bad-key".into(), "gpt-4.1".into(), server.uri());
-    let result = provider.refine_groups(&sample_refinement_request()).await;
+    let result = provider.annotate_group(&sample_pass2_request()).await;
 
     match result.unwrap_err() {
         LlmError::AuthError(_) => {} // Expected

@@ -58,17 +58,6 @@ describe("buildArgs", () => {
     expect(args).toContain("--annotate");
   });
 
-  it("includes --refine flag", () => {
-    const args = buildArgs({ repoPath: "/repo", refine: true });
-    expect(args).toContain("--refine");
-  });
-
-  it("includes both --annotate and --refine", () => {
-    const args = buildArgs({ repoPath: "/repo", annotate: true, refine: true });
-    expect(args).toContain("--annotate");
-    expect(args).toContain("--refine");
-  });
-
   it("handles repo path with spaces", () => {
     const args = buildArgs({ repoPath: "/my repo/path" });
     expect(args).toContain("/my repo/path");

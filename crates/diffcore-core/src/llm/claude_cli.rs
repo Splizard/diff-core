@@ -9,9 +9,9 @@ use tokio::time::{sleep, Duration};
 
 use super::schema;
 use super::{
-    redact_api_keys, truncate_to_token_budget, BackendStatus, JudgeRequest, JudgeResponse,
-    LlmError, LlmProvider, MetadataRequest, MetadataResponse, Pass1Request, Pass1Response,
-    Pass2Request, Pass2Response, RefinementRequest, RefinementResponse,
+    redact_api_keys, truncate_to_token_budget, BackendStatus, JudgeRequest, JudgeResponse, LlmError,
+    LlmProvider, MetadataRequest, MetadataResponse, Pass1Request, Pass1Response, Pass2Request,
+    Pass2Response,
 };
 
 const AGENT_ADDENDUM: &str =
@@ -252,18 +252,6 @@ impl LlmProvider for ClaudeCliProvider {
             super::judge_system_prompt(),
             super::judge_user_prompt(request),
             schema::judge_json_schema(),
-        )
-        .await
-    }
-
-    async fn refine_groups(
-        &self,
-        request: &RefinementRequest,
-    ) -> Result<RefinementResponse, LlmError> {
-        self.run_structured_prompt(
-            super::refinement_system_prompt(),
-            super::refinement_user_prompt(request),
-            schema::refinement_json_schema(),
         )
         .await
     }

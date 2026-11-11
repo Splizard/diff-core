@@ -160,43 +160,6 @@ test.describe("Group metadata — right panel", () => {
     await expect(page.getByTestId("group-summary")).toHaveCount(0);
   });
 
-  test("13b — descriptions survive a refinement instead of vanishing with the old groups", async ({ page }) => {
-    await expect(page.getByTestId("group-summary")).toBeVisible();
-    const before = await page.locator(".review-meta-description").textContent();
-
-    await page.locator(".btn-refine").click();
-    await page.waitForTimeout(2000);
-    await page.getByTestId("annotations-tab").click();
-
-    // Refinement rebuilds groups from scratch; the review metadata has to come
-    // back with them rather than leaving the panel bare until another click.
-    await expect(page.getByTestId("group-review-meta")).toBeVisible();
-    await expect(page.locator(".review-meta-description")).not.toBeEmpty();
-    await expect(page.getByTestId("group-summary")).toBeVisible();
-    expect(before).not.toBeNull();
-  });
-
-  test("13c — the refinement rationale stays collapsed instead of burying the group", async ({ page }) => {
-    await page.locator(".btn-refine").click();
-    await page.waitForTimeout(2000);
-    await page.getByTestId("annotations-tab").click();
-
-    const verdict = page.getByTestId("refinement-verdict");
-    await expect(verdict).toBeVisible();
-
-    // The one-line verdict is glanceable; the prose behind it is not, so it
-    // must not be competing with the group's own summary for attention.
-    const reasoning = verdict.locator(".refinement-verdict-reasoning");
-    await expect(reasoning).toBeHidden();
-
-    const metaY = (await page.getByTestId("group-review-meta").boundingBox())!.y;
-    const verdictY = (await verdict.boundingBox())!.y;
-    expect(metaY).toBeLessThan(verdictY);
-
-    await verdict.locator("summary").click();
-    await expect(reasoning).toBeVisible();
-  });
-
   test("14 — the PR-level overall summary stays out of the group panel", async ({ page }) => {
     await expect(page.getByTestId("group-review-meta")).toBeVisible();
     await expect(page.getByTestId("pr-overview")).toHaveCount(0);

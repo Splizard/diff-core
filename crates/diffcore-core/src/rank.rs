@@ -134,11 +134,11 @@ pub fn rank_input_for_group(
 /// Recompute `risk_score` in place for groups whose file composition changed
 /// after the initial ranking.
 ///
-/// LLM refinement splits and merges groups without re-scoring: `apply_split`
-/// makes sub-groups inherit their source's score and `apply_merge` leaves the
-/// merged group at 0.0, so a merged group sorts as the least risky thing in the
-/// diff. `review_order` is deliberately left alone — refinement may have
-/// re-ranked on purpose, and that decision outranks the composite score.
+/// Scores are computed from each group's current files, so anything that
+/// changes group composition or per-file stats after the initial ranking should
+/// call this before relying on `risk_score`.
+/// `review_order` is deliberately left alone — callers that reorder groups own
+/// that decision.
 pub fn rescore_groups(
     groups: &mut [FlowGroup],
     file_centrality: &HashMap<String, f64>,

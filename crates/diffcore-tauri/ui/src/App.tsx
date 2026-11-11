@@ -13,8 +13,6 @@ import type {
   AsyncLlmJobStart,
   LlmActivityEntry,
   LlmActivityJob,
-  RefinementResult,
-  RefinementResponse,
   ReviewComment,
   CommentInput,
   InfraSubGroup,
@@ -29,7 +27,7 @@ import SourceExplorer, { type SourceFocusRequest } from "./components/SourceExpl
 import ErrorBoundary from "./components/ErrorBoundary";
 import { buildManifestPrompt } from "./buildManifestPrompt";
 import { THEMES, applyTheme, getTheme, loadThemePrefs, saveThemePrefs, normalizeThemePrefs, resolveThemeId, type ThemeMode, type ThemePrefs } from "./themes";
-import { MOCK_ANALYSIS, MOCK_DIFFS, MOCK_PASS2, MOCK_REPO_INFO, MOCK_LLM_SETTINGS, MOCK_REFINEMENT, MOCK_RESOLVED_PR } from "./mock";
+import { MOCK_ANALYSIS, MOCK_DIFFS, MOCK_PASS2, MOCK_REPO_INFO, MOCK_LLM_SETTINGS, MOCK_RESOLVED_PR } from "./mock";
 
 import { IS_TAURI, HAS_BACKEND, DEFAULT_REPO, invoke as tauriInvoke } from "./backend";
 
@@ -144,35 +142,6 @@ async function jobStreamAlive(url: string): Promise<boolean> {
   } catch {
     return false;
   }
-}
-
-function TruncatedText({
-  text,
-  maxChars = 320,
-  className,
-}: {
-  text: string;
-  maxChars?: number;
-  className?: string;
-}) {
-  const [expanded, setExpanded] = useState(false);
-  const needsTruncation = text.length > maxChars;
-  if (!needsTruncation) {
-    return <p className={className}>{text}</p>;
-  }
-  const displayed = expanded ? text : `${text.slice(0, maxChars).trimEnd()}…`;
-  return (
-    <div className={`truncated-text ${expanded ? "truncated-text-expanded" : ""}`}>
-      <p className={className}>{displayed}</p>
-      <button
-        type="button"
-        className="truncated-text-toggle"
-        onClick={() => setExpanded((v) => !v)}
-      >
-        {expanded ? "Show less" : "Show more"}
-      </button>
-    </div>
-  );
 }
 
 function hyphenateVariant(value: string): string {
@@ -456,19 +425,6 @@ export default function App() {
   const [replayActive, setReplayActive] = useState(false);
   const [replayStep, setReplayStep] = useState(0);
   const [replayVisited, setReplayVisited] = useState<Set<string>>(new Set());
-
-  // Refinement state
-  const [originalGroups, setOriginalGroups] = useState<FlowGroup[] | null>(null);
-  const [refinedGroups, setRefinedGroups] = useState<FlowGroup[] | null>(null);
-  const [refinementResponse, setRefinementResponse] = useState<RefinementResponse | null>(null);
-  const [refinementProvider, setRefinementProvider] = useState<string | null>(null);
-  const [refinementModel, setRefinementModel] = useState<string | null>(null);
-  const [refinementHadChanges, setRefinementHadChanges] = useState<boolean | null>(null);
-  const [showRefined, setShowRefined] = useState(false);
-  const [groupListTransitionState, setGroupListTransitionState] = useState<"idle" | "fading-out" | "fading-in">("idle");
-  const groupListTransitionTimers = useRef<number[]>([]);
-  const [refining, setRefining] = useState(false);
-  const refinementJobIdRef = useRef<string | null>(null);
 
   // Context menu state (right-click on file items)
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; filePath: string } | null>(null);
@@ -861,11 +817,9 @@ export default function App() {
       command: string,
       args: Record<string, unknown>,
       onComplete: (value: T) => void,
-      onJobId?: (jobId: string) => void,
     ) => {
       closeActivityStream();
       const start = await tauriInvoke<AsyncLlmJobStart>(command, args);
-      onJobId?.(start.job_id);
       saveStored(JOBS_KEY, [...loadJobs(), { ...start, repoPath: repoPath.trim(), baseRef, headRef }]);
       await attachJobStream(start, onComplete);
     },
@@ -1059,8 +1013,7 @@ export default function App() {
 
   /**
    * Run the LLM group metadata pass and fold the result into the current
-   * analysis. Fired after analyze and again after refinement — refinement
-   * rebuilds groups from scratch, so their descriptions go with them.
+   * analysis. Fired after analyze.
    *
    * Fire-and-forget: a failed description must never break the grouping the
    * user already has. The backend re-checks `llm.metadata.enabled` too, so a
@@ -1130,15 +1083,6 @@ export default function App() {
     setActivityError(null);
     setRightPanelTab("annotations");
     setSourceFocusRequest(null);
-    // Reset refinement state
-    setOriginalGroups(null);
-    setRefinedGroups(null);
-    setRefinementResponse(null);
-    setRefinementProvider(null);
-    setRefinementModel(null);
-    setRefinementHadChanges(null);
-    setShowRefined(false);
-    refinementApplied.current = false;
     // Reset review tick-off state
     setReviewedGroupIds(new Set());
     setDismissedEmptyGroupIds(new Set());
@@ -1180,14 +1124,6 @@ export default function App() {
           (a, b) => a.review_order - b.review_order,
         );
         handleSelectGroup(sorted[0]);
-      }
-      // Check for cached refinement and auto-apply if found
-      if (HAS_BACKEND) {
-        tauriInvoke<RefinementResult | null>("get_cached_refinement", { repoPath: path || null }).then((cached) => {
-          if (cached) {
-            applyRefinementResult(cached, { fromCache: true });
-          }
-        }).catch(() => {});
       }
       void describeGroups();
     } catch (e) {
@@ -1254,15 +1190,6 @@ export default function App() {
     llmSettings?.provider ?? null,
     resolvedPrimaryProvider,
   );
-  const resolvedRefinementProvider = resolveInteractiveProvider(
-    llmSettings?.refinement_provider ?? llmSettings?.provider ?? null,
-    recommendedSubscriptionProvider,
-  );
-  const resolvedRefinementModel = resolveInteractiveModel(
-    llmSettings?.refinement_model ?? llmSettings?.model ?? null,
-    llmSettings?.refinement_provider ?? llmSettings?.provider ?? null,
-    resolvedRefinementProvider,
-  );
   const aiAccessReady = hasApiKey || !!recommendedSubscriptionProvider;
 
   /**
@@ -1293,7 +1220,7 @@ export default function App() {
   }, [aiAccessReady, llmSettings, repoPath, resolvedPrimaryModel, resolvedPrimaryProvider, showToast]);
 
   // Fire it once per analysis. `analysis` is also rewritten by the metadata
-  // pass and by refinement, so key off the diff rather than object identity.
+  // pass, so key off the diff rather than object identity.
   const autoAnnotatedRef = useRef<string | null>(null);
   useEffect(() => {
     if (!analysis) return;
@@ -1337,7 +1264,7 @@ export default function App() {
             model: resolvedPrimaryModel ?? "default",
             title: `Analyzing ${selectedGroup.id}`,
           },
-          buildMockActivityEntries("group", resolvedPrimaryProvider ?? "codex"),
+          buildMockActivityEntries(resolvedPrimaryProvider ?? "codex"),
           MOCK_PASS2[selectedGroup.id] || {
             group_id: selectedGroup.id,
             flow_narrative: "No deep analysis available for this group in demo mode.",
@@ -1359,120 +1286,6 @@ export default function App() {
     }
   }, [selectedGroup, repoPath, baseRef, resolvedPrimaryModel, resolvedPrimaryProvider, runMockActivityJob, runStreamingJob]);
 
-  const refinementApplied = useRef(false);
-  const analysisRef = useRef<AnalysisOutput | null>(null);
-  analysisRef.current = analysis;
-  const applyRefinementResult = useCallback((result: RefinementResult, opts?: { fromCache?: boolean }) => {
-    const current = analysisRef.current;
-    if (!current) return;
-    if (opts?.fromCache && refinementApplied.current) return;
-    refinementApplied.current = true;
-
-    setOriginalGroups((prev) => prev ?? current.groups);
-
-    setRefinedGroups(result.refined_groups);
-    setRefinementResponse(result.refinement_response);
-    setRefinementProvider(result.provider);
-    setRefinementModel(result.model);
-    setRefinementHadChanges(result.had_changes);
-
-    if (result.had_changes) {
-      setShowRefined(true);
-      setAnalysis((prev) =>
-        prev
-          ? {
-              ...prev,
-              groups: result.refined_groups,
-              infrastructure_group: result.infrastructure_group ?? prev.infrastructure_group,
-            }
-          : prev,
-      );
-      setReviewedGroupIds(new Set());
-      if (opts?.fromCache) {
-        showToast("Restored cached refinement");
-      } else {
-        showToast("Groups updated by refinement \u2014 review state reset");
-      }
-      const sorted = [...result.refined_groups].sort(
-        (a, b) => a.review_order - b.review_order,
-      );
-      if (sorted.length > 0) {
-        handleSelectGroup(sorted[0]);
-      }
-      // Refinement rebuilds groups, so their descriptions went with them.
-      // Re-describe rather than making the user hunt for another button.
-      void describeGroups();
-    } else {
-      setShowRefined(false);
-      if (!opts?.fromCache) {
-        showToast("Refinement kept the existing grouping");
-      }
-    }
-
-    // Cache the result for future sessions (non-blocking, fire-and-forget)
-    if (HAS_BACKEND && !opts?.fromCache) {
-      tauriInvoke("store_refinement_cache", { result, repoPath: repoPath || null }).catch(() => {});
-    }
-  }, [handleSelectGroup, showToast, describeGroups, repoPath]);
-
-  /** Run LLM refinement pass on the current analysis groups. */
-  const runRefinement = useCallback(async () => {
-    if (!analysis) return;
-    setRefining(true);
-    setError(null);
-    try {
-      if (HAS_BACKEND) {
-        await runStreamingJob<RefinementResult>("start_refine_groups", {
-          repoPath: repoPath || null,
-          llmProvider: resolvedRefinementProvider,
-          llmModel: resolvedRefinementModel,
-        }, (result) => {
-          applyRefinementResult(result);
-        }, (jobId) => {
-          refinementJobIdRef.current = jobId;
-        });
-      } else {
-        await runMockActivityJob<RefinementResult>(
-          {
-            job_id: "mock-refinement",
-            operation: "refinement",
-            provider: resolvedRefinementProvider ?? "claude",
-            model: resolvedRefinementModel ?? "default",
-            title: "Refining groups",
-          },
-          buildMockActivityEntries("refinement", resolvedRefinementProvider ?? "claude"),
-          MOCK_REFINEMENT,
-          (result) => applyRefinementResult(result),
-        );
-      }
-    } catch (e) {
-      const message = String(e);
-      // Cancellation surfaces as a Failed event with "Cancelled by user"; don't
-      // present that to the user as an error.
-      if (!message.includes("Cancelled by user")) {
-        setError(`Refinement failed: ${message}`);
-      }
-    } finally {
-      refinementJobIdRef.current = null;
-      setRefining(false);
-    }
-  }, [analysis, repoPath, resolvedRefinementModel, resolvedRefinementProvider, runMockActivityJob, runStreamingJob, applyRefinementResult]);
-
-  /** Cancel the in-flight refinement job, if any. */
-  const cancelRefinement = useCallback(async () => {
-    const jobId = refinementJobIdRef.current;
-    if (!jobId) {
-      // Mock path: just flip the flag back so the UI returns to the Refine state.
-      setRefining(false);
-      return;
-    }
-    try {
-      await tauriInvoke<boolean>("cancel_refine_groups", { jobId });
-    } catch (e) {
-      setError(`Cancel failed: ${String(e)}`);
-    }
-  }, []);
-
   const reattachJobs = useCallback(async () => {
     const jobs = loadJobs().slice(-1);
     saveStored(JOBS_KEY, jobs);
@@ -1483,38 +1296,23 @@ export default function App() {
         forgetJob(job.job_id);
         return;
       }
-      const isRefinement = job.operation === "refinement";
-      if (isRefinement) {
-        refinementJobIdRef.current = job.job_id;
-        setRefining(true);
-      } else {
-        deepAnalyzingCount.current += 1;
-        setDeepAnalyzing(true);
-      }
+      deepAnalyzingCount.current += 1;
+      setDeepAnalyzing(true);
       attachJobStream(job, (result) => {
-        if (isRefinement) {
-          applyRefinementResult(result as RefinementResult);
-        } else {
-          const analysisResult = result as Pass2Response;
-          setDeepAnalyses((prev) => ({ ...prev, [analysisResult.group_id]: analysisResult }));
-        }
+        const analysisResult = result as Pass2Response;
+        setDeepAnalyses((prev) => ({ ...prev, [analysisResult.group_id]: analysisResult }));
       })
         .catch((e) => {
           const message = String(e);
           if (message.includes("Cancelled by user")) return;
-          setError(`${isRefinement ? "Refinement" : "Deep analysis"} failed: ${message}`);
+          setError(`Deep analysis failed: ${message}`);
         })
         .finally(() => {
-          if (isRefinement) {
-            refinementJobIdRef.current = null;
-            setRefining(false);
-          } else {
-            deepAnalyzingCount.current = Math.max(0, deepAnalyzingCount.current - 1);
-            if (deepAnalyzingCount.current === 0) setDeepAnalyzing(false);
-          }
+          deepAnalyzingCount.current = Math.max(0, deepAnalyzingCount.current - 1);
+          if (deepAnalyzingCount.current === 0) setDeepAnalyzing(false);
         });
     });
-  }, [attachJobStream, applyRefinementResult, repoPath, baseRef, headRef]);
+  }, [attachJobStream, repoPath, baseRef, headRef]);
 
   const restorePending = useRef(HAS_BACKEND && restored && session.analyzedRepo === session.repoPath.trim());
   useEffect(() => {
@@ -1522,45 +1320,6 @@ export default function App() {
     restorePending.current = false;
     runAnalysis().then(reattachJobs);
   }, [llmSettings, runAnalysis, reattachJobs]);
-
-  /** Toggle between original and refined groups. */
-  const toggleRefinedView = useCallback(
-    (useRefined: boolean) => {
-      if (!analysis) return;
-      const groups = useRefined ? refinedGroups : originalGroups;
-      if (!groups || useRefined === showRefined) return;
-
-      groupListTransitionTimers.current.forEach((timer) => window.clearTimeout(timer));
-      groupListTransitionTimers.current = [];
-      setGroupListTransitionState("fading-out");
-
-      const swapTimer = window.setTimeout(() => {
-        setShowRefined(useRefined);
-        setAnalysis((prev) =>
-          prev ? { ...prev, groups } : prev,
-        );
-        const sorted = [...groups].sort(
-          (a, b) => a.review_order - b.review_order,
-        );
-        if (sorted.length > 0) {
-          handleSelectGroup(sorted[0]);
-        }
-        setGroupListTransitionState("fading-in");
-
-        const settleTimer = window.setTimeout(() => {
-          setGroupListTransitionState("idle");
-        }, 220);
-        groupListTransitionTimers.current.push(settleTimer);
-      }, 150);
-
-      groupListTransitionTimers.current.push(swapTimer);
-    },
-    [analysis, refinedGroups, originalGroups, handleSelectGroup, showRefined],
-  );
-
-  useEffect(() => () => {
-    groupListTransitionTimers.current.forEach((timer) => window.clearTimeout(timer));
-  }, []);
 
   // Auto-load demo data when not in Tauri
   useEffect(() => {
@@ -1609,7 +1368,7 @@ export default function App() {
         setActivityEntries(entries);
       },
       setError: (msg: string | null) => setError(msg),
-      clearAnalysis: () => { setAnalysis(null); setSelectedGroup(null); setSelectedFile(null); setFileDiff(null); setOverview(null); setDeepAnalyses({}); setOriginalGroups(null); setRefinedGroups(null); setRefinementResponse(null); setRefinementProvider(null); setRefinementModel(null); setRefinementHadChanges(null); setShowRefined(false); refinementApplied.current = false; setReviewedGroupIds(new Set()); setComments([]); setCommentInput(null); setCommentText(""); setRightPanelTab("annotations"); setSourceFocusRequest(null); setActivityJob(null); setActivityEntries([]); setActivityError(null); setActivityViewMode("stream"); setInspectedActivityId(null); },
+      clearAnalysis: () => { setAnalysis(null); setSelectedGroup(null); setSelectedFile(null); setFileDiff(null); setOverview(null); setDeepAnalyses({}); setReviewedGroupIds(new Set()); setComments([]); setCommentInput(null); setCommentText(""); setRightPanelTab("annotations"); setSourceFocusRequest(null); setActivityJob(null); setActivityEntries([]); setActivityError(null); setActivityViewMode("stream"); setInspectedActivityId(null); },
       openAiSetup: (step: OnboardingStep = "recommended") => openAiSetup(step),
       dismissAiSetup: () => dismissAiSetup(),
       getAiSetupState: () => ({ open: aiSetupOpen, step: aiSetupStep }),
@@ -1703,21 +1462,14 @@ export default function App() {
     (field: keyof LlmSettings, value: string | boolean | number) => {
       if (!llmSettings) return;
       const updated = { ...llmSettings, [field]: value };
-      // When provider changes, reset model to default for that provider and sync refinement
+      // When provider changes, reset model to default for that provider
       if (field === "provider") {
         const provider = value as LlmProvider;
         const models = MODELS_BY_PROVIDER[provider] ?? [];
         updated.model = models[0] ?? "";
-        updated.refinement_provider = provider;
-        updated.refinement_model = models[0] ?? "";
         if (isApiProvider(provider)) {
           setApiProviderDraft(provider);
         }
-      }
-      if (field === "refinement_provider") {
-        const provider = value as LlmProvider;
-        const models = MODELS_BY_PROVIDER[provider] ?? [];
-        updated.refinement_model = models[0] ?? "";
       }
       saveLlmSettings(updated);
     },
@@ -1741,8 +1493,6 @@ export default function App() {
       api_key_source: llmSettings.global_config_path,
       api_key_in_config: true,
       has_api_key: true,
-      refinement_provider: apiProviderDraft,
-      refinement_model: selectedApiModel,
     };
     try {
       await saveLlmSettings(updated);
@@ -1860,22 +1610,9 @@ export default function App() {
         return source as LlmProvider;
       }
     }
-    return resolvedRefinementProvider ?? resolvedPrimaryProvider ?? null;
-  }, [activityJob?.provider, activityTimeline, resolvedPrimaryProvider, resolvedRefinementProvider]);
+    return resolvedPrimaryProvider ?? null;
+  }, [activityJob?.provider, activityTimeline, resolvedPrimaryProvider]);
   const activitySupportsToolStreaming = providerSupportsToolActivity(activityEventProvider);
-  const refinementVerdict = useMemo(() => {
-    if (!refinementResponse || !refinementProvider) return null;
-    return {
-      provider: refinementProvider,
-      model: refinementModel ?? "default",
-      hadChanges: refinementHadChanges === true,
-      title: refinementHadChanges
-        ? "Applied structural changes"
-        : "Kept the current grouping",
-      reasoning: refinementResponse.reasoning?.trim() || null,
-    };
-  }, [refinementHadChanges, refinementModel, refinementProvider, refinementResponse]);
-
   const openAiSetup = useCallback((step: OnboardingStep = "recommended") => {
     aiSetupDismissed.current = false;
     setAiSetupStep(step);
@@ -1923,8 +1660,6 @@ export default function App() {
       model,
       api_key_source: provider === "codex" ? "Codex CLI login" : "Claude Code subscription",
       has_api_key: true,
-      refinement_provider: provider,
-      refinement_model: model,
     };
     await saveLlmSettings(updated);
     setAiSetupOpen(false);
@@ -1940,8 +1675,6 @@ export default function App() {
       model,
       api_key_source: recommendedSubscriptionProvider === "codex" ? "Codex CLI login" : "Claude Code subscription",
       has_api_key: true,
-      refinement_provider: recommendedSubscriptionProvider,
-      refinement_model: model,
     };
     await saveLlmSettings(updated);
     showToast(`Using ${PROVIDER_LABELS[recommendedSubscriptionProvider]} for live AI jobs`);
@@ -2261,9 +1994,6 @@ export default function App() {
       const updated = await tauriInvoke<AnalysisOutput>("import_groups_manifest", { manifestPath });
       setAnalysis(updated);
       // Reset state for new groupings
-      setRefinedGroups(null);
-      setOriginalGroups(null);
-      setShowRefined(false);
       setReviewedGroupIds(new Set());
       if (updated.groups.length > 0) {
         const sorted = [...updated.groups].sort((a, b) => a.review_order - b.review_order);
@@ -2292,7 +2022,7 @@ export default function App() {
     }
   }, [analysis, repoPath, showToast]);
 
-  /** Build an agent prompt for iterative manifest refinement. */
+  /** Build an agent prompt for iterative manifest editing. */
   const buildManifestAgentPrompt = useCallback((manifestPath: string): string => {
     return buildManifestPrompt({
       manifestPath,
@@ -2849,22 +2579,6 @@ export default function App() {
             )}
           </div>
 
-          {refinementVerdict && (
-            <div className="annotation-section refinement-verdict-section" data-testid="refinement-verdict">
-              <h3>Refinement Verdict</h3>
-              <p className="refinement-verdict-title">{refinementVerdict.title}</p>
-              <p className="refinement-verdict-meta">
-                {PROVIDER_LABELS[refinementVerdict.provider as LlmProvider] ?? refinementVerdict.provider}/{refinementVerdict.model}
-              </p>
-              {refinementVerdict.reasoning && (
-                <details className="refinement-verdict-details">
-                  <summary>Why these groups</summary>
-                  <p className="refinement-verdict-reasoning">{refinementVerdict.reasoning}</p>
-                </details>
-              )}
-            </div>
-          )}
-
           {groupDeepAnalysis && (
             <>
               <div className="annotation-section llm-section">
@@ -2978,7 +2692,7 @@ export default function App() {
                   ? `Latest stream captured from ${PROVIDER_LABELS[activityEventProvider as LlmProvider] ?? activityEventProvider}${activitySupportsToolStreaming ? " with live repo access." : "."}`
                   : activityEventProvider
                     ? `${PROVIDER_LABELS[activityEventProvider as LlmProvider] ?? activityEventProvider}${activitySupportsToolStreaming ? " can stream repo activity live." : " is running in direct API mode."}`
-                  : "Run Summarize PR, Analyze This Flow, or Refine to inspect AI work."}
+                  : "Run Summarize PR or Analyze This Flow to inspect AI work."}
             </p>
           </div>
           {activityJob ? (
@@ -3034,21 +2748,6 @@ export default function App() {
           </div>
         )}
 
-        {refinementVerdict && (
-          <div className={`activity-callout ${refinementVerdict.hadChanges ? "activity-callout-positive" : ""}`} data-testid="activity-refinement-verdict">
-            <p className="activity-callout-title">{refinementVerdict.title}</p>
-            <p className="activity-callout-body">
-              {PROVIDER_LABELS[refinementVerdict.provider as LlmProvider] ?? refinementVerdict.provider}/{refinementVerdict.model}
-            </p>
-            {refinementVerdict.reasoning && (
-              <TruncatedText
-                text={refinementVerdict.reasoning}
-                maxChars={280}
-                className="activity-callout-body"
-              />
-            )}
-          </div>
-        )}
       </div>
 
       <div className="annotation-section activity-section" data-testid="activity-log-panel">
@@ -3757,11 +3456,6 @@ export default function App() {
                     Effective summary backend on this machine: <strong>{PROVIDER_LABELS[resolvedPrimaryProvider as LlmProvider]}/{resolvedPrimaryModel ?? "default"}</strong>
                   </p>
                 )}
-                {llmSettings.refinement_enabled && resolvedRefinementProvider && (
-                  <p className="settings-hint">
-                    Effective refinement backend on this machine: <strong>{PROVIDER_LABELS[resolvedRefinementProvider as LlmProvider]}/{resolvedRefinementModel ?? "default"}</strong>
-                  </p>
-                )}
                 {recommendedSubscriptionProvider && isApiProvider(llmSettings.provider) && (
                   <p className="settings-hint">
                     Diffcore will prefer {PROVIDER_LABELS[recommendedSubscriptionProvider]} for live jobs on this machine,
@@ -3891,58 +3585,6 @@ export default function App() {
                 </p>
               </div>
 
-              {/* Refinement Section */}
-              <div className="settings-section settings-refinement">
-                <h3>Refinement</h3>
-                <label className="settings-toggle">
-                  <input
-                    type="checkbox"
-                    checked={llmSettings.refinement_enabled}
-                    onChange={(e) => updateSetting("refinement_enabled", e.target.checked)}
-                  />
-                  <span>Enable LLM refinement</span>
-                </label>
-                <p className="settings-hint">
-                  Refines deterministic groupings using an LLM pass. This is still useful with Codex CLI or Claude Code:
-                  the provider changes, but the refinement step is what decides whether the deterministic groups should be
-                  split, merged, re-ranked, or kept as-is.
-                </p>
-                {llmSettings.refinement_enabled && (
-                  <>
-                    <div className="settings-row">
-                      <label>Provider</label>
-                      <select
-                        className="settings-select"
-                        value={llmSettings.refinement_provider}
-                        onChange={(e) => updateSetting("refinement_provider", e.target.value)}
-                      >
-                        {LLM_PROVIDERS.map((p) => (
-                          <option key={p} value={p}>
-                            {PROVIDER_LABELS[p]}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                    <div className="settings-row">
-                      <label>Model</label>
-                      <select
-                        className="settings-select"
-                        value={llmSettings.refinement_model}
-                        onChange={(e) => updateSetting("refinement_model", e.target.value)}
-                      >
-                        {(MODELS_BY_PROVIDER[llmSettings.refinement_provider as LlmProvider] ?? []).map(
-                          (m) => (
-                            <option key={m} value={m}>
-                              {m}
-                            </option>
-                          ),
-                        )}
-                      </select>
-                    </div>
-                  </>
-                )}
-              </div>
-
               {/* Exclude Paths Section */}
               <div className="settings-section">
                 <h3>Exclude Paths</h3>
@@ -4017,42 +3659,9 @@ export default function App() {
                 Copy Comments ({comments.length})
               </button>
             )}
-            {showRefined && refinementProvider && (
-              <span className="refined-badge" title={`Refined by ${refinementProvider}/${refinementModel}`}>
-                Refined by {refinementModel}
-              </span>
-            )}
           </div>
           <div className="panel-body">
-            {/* Refinement banner — shown after analysis when LLM access is available */}
-            {analysis && !refinedGroups && !refining && aiAccessReady && (
-              <div className="refinement-banner">
-                <span>AI can improve these groupings</span>
-                <button
-                  className="btn btn-refine"
-                  onClick={runRefinement}
-                  title={`Refine groupings using ${resolvedRefinementProvider ?? "anthropic"} (${resolvedRefinementModel ?? "default"})`}
-                >
-                  Refine
-                </button>
-              </div>
-            )}
-
-            {analysis && refining && (
-              <div className="refinement-banner refinement-banner-running">
-                <span>Refining groups…</span>
-                <button
-                  className="btn btn-refine btn-refine-cancel"
-                  onClick={cancelRefinement}
-                  title="Stop the in-flight refinement"
-                  data-testid="refinement-cancel"
-                >
-                  Cancel
-                </button>
-              </div>
-            )}
-
-            {/* Manifest export & watch — allows CLI/agent refinement loop */}
+            {/* Manifest export & watch — allows a CLI/agent editing loop */}
             {analysis && IS_TAURI && !watchedManifestPath && (
               <div className="refinement-banner">
                 <span>Edit groups via CLI</span>
@@ -4095,7 +3704,7 @@ export default function App() {
                   <span>Agent prompt copied to clipboard</span>
                 </div>
                 <p className="manifest-watch-hint">
-                  Paste into Claude Code or your terminal agent to start refining groups. The UI updates in real-time.
+                  Paste into Claude Code or your terminal agent to start editing groups. The UI updates in real-time.
                 </p>
                 <button
                   className="btn btn-refine"
@@ -4112,51 +3721,16 @@ export default function App() {
               </div>
             )}
 
-            {/* Refinement loading state */}
-            {refining && (
-              <div className="refinement-loading">
-                <span className="refine-spinner" />
-                <span>
-                  Refining with {resolvedRefinementProvider ?? "anthropic"}/{resolvedRefinementModel ?? "..."}
-                </span>
-              </div>
-            )}
-
-            {/* Original/Refined toggle — shown when refined groups exist */}
-            {refinedGroups && originalGroups && (
-              <div className="refinement-toggle">
-                <button
-                  className={`toggle-btn ${!showRefined ? "active" : ""}`}
-                  onClick={() => toggleRefinedView(false)}
-                >
-                  Original
-                </button>
-                <button
-                  className={`toggle-btn ${showRefined ? "active" : ""}`}
-                  onClick={() => toggleRefinedView(true)}
-                >
-                  Refined
-                </button>
-              </div>
-            )}
-
-            <div
-              className={`group-list group-list-${groupListTransitionState}`}
-              data-testid="group-list"
-              data-group-list-transition={groupListTransitionState}
-            >
+            <div className="group-list" data-testid="group-list">
               {sortedGroups
                 .filter((group) => !(group.files.length === 0 && dismissedEmptyGroupIds.has(group.id)))
                 .map((group) => {
-                const changeIndicator = showRefined
-                  ? getGroupChangeIndicator(group, refinementResponse)
-                  : null;
                 const isEmpty = group.files.length === 0;
 
                 return (
                   <div
                     key={group.id}
-                    className={`group-item ${selectedGroup?.id === group.id ? "selected" : ""} ${changeIndicator ? "refined-change" : ""} ${reviewedGroupIds.has(group.id) ? "group-reviewed" : ""} ${isEmpty ? "group-empty" : ""}`}
+                    className={`group-item ${selectedGroup?.id === group.id ? "selected" : ""} ${reviewedGroupIds.has(group.id) ? "group-reviewed" : ""} ${isEmpty ? "group-empty" : ""}`}
                     onClick={() => handleSelectGroup(group)}
                   >
                     <div className="group-header">
@@ -4172,7 +3746,7 @@ export default function App() {
                       </span>
                       <span className="group-name">{group.name}</span>
                       {isEmpty && (
-                        <span className="group-emptied-tag" title="This group has no files after refinement">
+                        <span className="group-emptied-tag" title="This group has no files">
                           EMPTIED
                         </span>
                       )}
@@ -4232,25 +3806,15 @@ export default function App() {
                         )}
                       </div>
                     )}
-                    {changeIndicator && (
-                      <div className="change-indicator" title={changeIndicator.reason}>
-                        <span className={`change-tag change-${changeIndicator.type}`}>
-                          {changeIndicator.label}
-                        </span>
-                      </div>
-                    )}
                     <div className={`file-list-wrapper ${reviewedGroupIds.has(group.id) ? "file-list-wrapper-collapsed" : ""}`}>
                       <ul className="file-list">
                         {group.files.map((file) => {
-                          const fileMoved = showRefined
-                            ? getFileMovedIndicator(file.path, refinementResponse)
-                            : null;
                           const fileCommentCount = commentsForFile(file.path).length;
 
                           return (
                             <li
                               key={file.path}
-                              className={`file-item ${selectedFile === file.path ? "selected" : ""} ${fileMoved ? "file-moved" : ""}`}
+                              className={`file-item ${selectedFile === file.path ? "selected" : ""}`}
                               onClick={(e) => {
                                 e.stopPropagation();
                                 openFileInTab(file.path, group.id);
@@ -4290,11 +3854,6 @@ export default function App() {
                                   <span className="file-comment-icon">&#128172;</span>
                                   <span className="file-comment-count">{fileCommentCount}</span>
                                 </button>
-                              )}
-                              {fileMoved && (
-                                <span className="file-moved-tag" title={fileMoved.reason}>
-                                  moved from {fileMoved.from}
-                                </span>
                               )}
                             </li>
                           );
@@ -4842,16 +4401,16 @@ export default function App() {
                   ? commentsTabContent
                   : annotationsTabContent}
 
-            {(deepAnalyzing || refining) && rightPanelTab === "activity" && (
+            {deepAnalyzing && rightPanelTab === "activity" && (
               <div className="annotation-section llm-loading">
                 <span className="spinner" />
-                {deepAnalyzing ? "Analyzing flow group..." : "Refining groups..."}
+                Analyzing flow group...
               </div>
             )}
 
             {!aiAccessReady && llmSettings && (
               <div className="annotation-section llm-loading llm-setup-cta">
-                <span>Connect {PROVIDER_LABELS.codex}, {PROVIDER_LABELS.claude}, or a direct API key to unlock summaries and refinement.</span>
+                <span>Connect {PROVIDER_LABELS.codex}, {PROVIDER_LABELS.claude}, or a direct API key to unlock summaries and flow analysis.</span>
                 <button className="btn" onClick={() => openAiSetup("recommended")}>
                   Setup AI
                 </button>
@@ -5116,7 +4675,6 @@ function resolveInteractiveModel(
 }
 
 function buildMockActivityEntries(
-  operation: "group" | "refinement",
   provider: string,
 ): Array<Omit<LlmActivityEntry, "timestamp_ms">> {
   const toolBacked = providerSupportsToolActivity(provider);
@@ -5127,9 +4685,9 @@ function buildMockActivityEntries(
     {
       source: "diffcore",
       level: "info",
-      message: `Preparing ${operation === "group" ? "deep analysis" : operation} request`,
+      message: "Preparing deep analysis request",
       event_type: "diffcore.prepare",
-      payload: { operation, stage: "prepare" },
+      payload: { operation: "group", stage: "prepare" },
     },
   ];
 
@@ -5145,46 +4703,14 @@ function buildMockActivityEntries(
       {
         source: provider,
         level: "info",
-        message: operation === "refinement" ? "Reviewing current groups and producing a structured verdict" : "Submitting structured request to the API provider",
+        message: "Submitting structured request to the API provider",
         event_type: "provider.request",
       },
       {
         source: provider,
         level: "info",
-        message: operation === "refinement" ? "Refinement rationale: keep the current grouping because the changed files already form coherent review flows." : "Structured response ready",
+        message: "Structured response ready",
         event_type: "provider.result",
-      },
-    ];
-  }
-
-  if (operation === "group") {
-    return [
-      ...sharedStart,
-      {
-        source,
-        level: "info",
-        message: `${providerName} is running rg \"UserService|CreateUserInput\" -n crates/diffcore-tauri/ui/src`,
-        event_type: "stdout.command_execution",
-        payload: {
-          command: "rg \"UserService|CreateUserInput\" -n crates/diffcore-tauri/ui/src",
-          query: "UserService|CreateUserInput",
-        },
-      },
-      {
-        source,
-        level: "info",
-        message: `${providerName} is running sed -n '1,220p' crates/diffcore-tauri/ui/src/mock.ts`,
-        event_type: "stdout.command_execution",
-        payload: {
-          command: "sed -n '1,220p' crates/diffcore-tauri/ui/src/mock.ts",
-          path: "crates/diffcore-tauri/ui/src/mock.ts",
-        },
-      },
-      {
-        source,
-        level: "info",
-        message: "Assembling cross-cutting concerns",
-        event_type: "provider.cross_cutting",
       },
     ];
   }
@@ -5194,28 +4720,28 @@ function buildMockActivityEntries(
     {
       source,
       level: "info",
-      message: `${providerName} is running rg --files /demo/repo | head -n 40`,
+      message: `${providerName} is running rg \"UserService|CreateUserInput\" -n crates/diffcore-tauri/ui/src`,
       event_type: "stdout.command_execution",
       payload: {
-        command: "rg --files /demo/repo | head -n 40",
-        cwd: "/demo/repo",
+        command: "rg \"UserService|CreateUserInput\" -n crates/diffcore-tauri/ui/src",
+        query: "UserService|CreateUserInput",
       },
     },
     {
       source,
       level: "info",
-      message: `${providerName} is running sed -n '1,220p' /demo/repo/src/routes/users.ts`,
+      message: `${providerName} is running sed -n '1,220p' crates/diffcore-tauri/ui/src/mock.ts`,
       event_type: "stdout.command_execution",
       payload: {
-        command: "sed -n '1,220p' /demo/repo/src/routes/users.ts",
-        path: "/demo/repo/src/routes/users.ts",
+        command: "sed -n '1,220p' crates/diffcore-tauri/ui/src/mock.ts",
+        path: "crates/diffcore-tauri/ui/src/mock.ts",
       },
     },
     {
       source,
       level: "info",
-      message: "Refinement rationale: keep the current grouping because the changed files already form coherent review flows.",
-      event_type: "refinement.reasoning",
+      message: "Assembling cross-cutting concerns",
+      event_type: "provider.cross_cutting",
     },
   ];
 }
@@ -5506,69 +5032,6 @@ function shortSymbol(symbol: string): string {
   const parts = symbol.split("::");
   if (parts.length <= 1) return symbol;
   return parts[parts.length - 1];
-}
-
-/** Get a change indicator for a group based on the refinement response. */
-function getGroupChangeIndicator(
-  group: FlowGroup,
-  response: RefinementResponse | null,
-): { type: string; label: string; reason: string } | null {
-  if (!response) return null;
-
-  // Check if this group was created by a split
-  for (const split of response.splits) {
-    for (const newGroup of split.new_groups) {
-      if (group.name === newGroup.name || group.id.startsWith("group_refined_")) {
-        return {
-          type: "split",
-          label: `split from ${split.source_group_id}`,
-          reason: split.reason,
-        };
-      }
-    }
-  }
-
-  // Check if this group was created by a merge
-  for (const merge of response.merges) {
-    if (group.name === merge.merged_name) {
-      return {
-        type: "merge",
-        label: `merged from ${merge.group_ids.join(" + ")}`,
-        reason: merge.reason,
-      };
-    }
-  }
-
-  // Check if this group was re-ranked
-  for (const reRank of response.re_ranks) {
-    if (group.id === reRank.group_id) {
-      return {
-        type: "rerank",
-        label: `re-ranked to #${reRank.new_position}`,
-        reason: reRank.reason,
-      };
-    }
-  }
-
-  return null;
-}
-
-/** Check if a file was moved by a reclassification. */
-function getFileMovedIndicator(
-  filePath: string,
-  response: RefinementResponse | null,
-): { from: string; reason: string } | null {
-  if (!response) return null;
-
-  for (const reclass of response.reclassifications) {
-    if (reclass.file === filePath) {
-      return {
-        from: reclass.from_group_id,
-        reason: reclass.reason,
-      };
-    }
-  }
-  return null;
 }
 
 /** Format the branch tracking status into a readable string. */

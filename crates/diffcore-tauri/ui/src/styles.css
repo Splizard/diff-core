@@ -381,32 +381,6 @@ select:focus-visible {
   margin-top: 10px;
 }
 
-.truncated-text {
-  margin-top: 6px;
-}
-
-.truncated-text > p {
-  margin: 0;
-}
-
-.truncated-text-toggle {
-  margin-top: 6px;
-  padding: 0;
-  background: none;
-  border: none;
-  color: var(--accent);
-  font: inherit;
-  font-size: 11px;
-  font-weight: 600;
-  cursor: pointer;
-  text-decoration: underline;
-  text-underline-offset: 2px;
-}
-
-.truncated-text-toggle:hover {
-  color: var(--text-primary);
-}
-
 .activity-log-header {
   display: flex;
   flex-direction: column;
@@ -899,44 +873,6 @@ select:focus-visible {
     opacity: 1;
     transform: translateY(0);
   }
-}
-
-.refinement-verdict-section {
-  background: rgba(var(--accent-rgb), 0.06);
-}
-
-.refinement-verdict-title {
-  font-size: 14px;
-  font-weight: 700;
-  color: var(--text-primary);
-}
-
-.refinement-verdict-meta {
-  margin-top: 6px;
-  color: var(--accent);
-  font-family: var(--font-mono);
-  font-size: 11px;
-}
-
-.refinement-verdict-details {
-  margin-top: 8px;
-}
-
-.refinement-verdict-details > summary {
-  cursor: pointer;
-  font-size: 11px;
-  color: var(--text-secondary);
-  user-select: none;
-}
-
-.refinement-verdict-details > summary:hover {
-  color: var(--text-primary);
-}
-
-.refinement-verdict-reasoning {
-  margin-top: 8px;
-  color: var(--text-secondary);
-  line-height: 1.55;
 }
 
 html, body, #root {
@@ -3593,25 +3529,9 @@ body {
   text-align: center;
 }
 
-/* ── Refinement UX ── */
+/* ── Group list banners ── */
 
-/* Refined badge in panel header */
-.refined-badge {
-  font-size: 9px;
-  font-weight: 600;
-  font-family: var(--font-mono);
-  padding: 2px 6px;
-  border-radius: 3px;
-  background: rgba(var(--risk-low-rgb), 0.15);
-  color: var(--risk-low);
-  margin-left: 8px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 140px;
-}
-
-/* Panel header with refined badge */
+/* Panel header */
 .panel-left .panel-header {
   display: flex;
   align-items: center;
@@ -3619,7 +3539,7 @@ body {
   gap: 4px;
 }
 
-/* Refinement banner */
+/* Group list banner (manifest export) */
 .refinement-banner {
   display: flex;
   align-items: center;
@@ -3651,32 +3571,6 @@ body {
   background: var(--accent-hover);
 }
 
-.refinement-banner-running {
-  background: rgba(var(--risk-medium-rgb), 0.1);
-}
-
-.btn-refine-cancel {
-  background: rgba(var(--risk-high-rgb), 0.95);
-  border-color: rgba(var(--risk-high-rgb), 0.95);
-  color: var(--bg-primary);
-}
-
-.btn-refine-cancel:hover {
-  background: rgba(var(--risk-high-rgb), 0.78);
-}
-
-/* Refinement loading indicator */
-.refinement-loading {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 12px;
-  background: rgba(var(--accent-rgb), 0.06);
-  border-bottom: 1px solid var(--border);
-  font-size: 11px;
-  color: var(--text-secondary);
-}
-
 .refine-spinner {
   width: 14px;
   height: 14px;
@@ -3689,42 +3583,6 @@ body {
 
 @keyframes refine-spin {
   to { transform: rotate(360deg); }
-}
-
-/* Original/Refined toggle */
-.refinement-toggle {
-  display: flex;
-  margin: 6px 12px;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  overflow: hidden;
-}
-
-.toggle-btn {
-  flex: 1;
-  padding: 4px 8px;
-  font-size: 11px;
-  font-weight: 500;
-  border: none;
-  background: var(--bg-secondary);
-  color: var(--text-muted);
-  cursor: pointer;
-  transition: background 0.15s ease, color 0.15s ease;
-}
-
-.toggle-btn:first-child {
-  border-right: 1px solid var(--border);
-}
-
-.toggle-btn:hover:not(.active) {
-  background: var(--bg-hover);
-  color: var(--text-secondary);
-}
-
-.toggle-btn.active {
-  background: var(--accent);
-  color: var(--bg-primary);
-  font-weight: 600;
 }
 
 .manifest-watch-banner {
@@ -3767,42 +3625,6 @@ body {
   animation: activity-live-pulse 2s ease-in-out infinite;
 }
 
-/* Change indicators on groups */
-.change-indicator {
-  padding: 0 12px 8px;
-}
-
-.change-tag {
-  display: inline-block;
-  font-size: 9px;
-  font-weight: 600;
-  font-family: var(--font-mono);
-  padding: 1px 5px;
-  border-radius: 3px;
-  text-transform: uppercase;
-}
-
-.change-split {
-  background: rgba(var(--accent-rgb), 0.15);
-  color: var(--accent);
-}
-
-.change-merge {
-  background: rgba(var(--accent-alt-rgb), 0.15);
-  color: var(--accent-alt);
-}
-
-.change-rerank {
-  background: rgba(var(--warn-rgb), 0.15);
-  color: var(--warn);
-}
-
-/* Group with refinement change highlight */
-.group-item.refined-change {
-  border-left: 2px solid var(--accent);
-  background: linear-gradient(90deg, rgba(var(--accent-rgb), 0.08), transparent 60%);
-}
-
 .group-list {
   display: flex;
   flex-direction: column;
@@ -3812,48 +3634,6 @@ body {
     transform 160ms ease,
     filter 160ms ease;
   transform-origin: top center;
-}
-
-.group-list-fading-out {
-  opacity: 0;
-  transform: translateY(8px) scale(0.985);
-  filter: saturate(0.88);
-  pointer-events: none;
-}
-
-.group-list-fading-in {
-  animation: group-list-fade-in 220ms cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-@keyframes group-list-fade-in {
-  from {
-    opacity: 0;
-    transform: translateY(10px) scale(0.985);
-    filter: saturate(0.88);
-  }
-
-  to {
-    opacity: 1;
-    transform: translateY(0) scale(1);
-    filter: saturate(1);
-  }
-}
-
-/* File moved indicator */
-.file-moved-tag {
-  font-size: 8px;
-  font-family: var(--font-mono);
-  padding: 1px 4px;
-  border-radius: 2px;
-  background: rgba(var(--accent-alt-rgb), 0.15);
-  color: var(--accent-alt);
-  white-space: nowrap;
-  flex-shrink: 0;
-}
-
-.file-item.file-moved {
-  border-left: 2px solid var(--accent-alt);
-  padding-left: 18px;
 }
 
 /* ── Risk Heatmap (Treemap) ── */

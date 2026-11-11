@@ -2,10 +2,7 @@
 //!
 //! Shared across `llm_live.rs`, `vcr_integration.rs`, and `llm_judge.rs`.
 
-use diffcore_core::llm::schema::{
-    Pass1GroupInput, Pass1Request, Pass2FileInput, Pass2Request, RefinementGroupInput,
-    RefinementRequest,
-};
+use diffcore_core::llm::schema::{Pass1GroupInput, Pass1Request, Pass2FileInput, Pass2Request};
 
 /// Check if live LLM tests should run.
 ///
@@ -120,27 +117,5 @@ pub fn sample_pass2_request() -> Pass2Request {
             },
         ],
         graph_context: "route.ts -> user-service.ts -> user-repo.ts (calls chain)".to_string(),
-    }
-}
-
-/// Build a sample refinement request for testing.
-pub fn sample_refinement_request() -> RefinementRequest {
-    RefinementRequest {
-        analysis_json: r#"{"version":"1.0.0","groups":[{"id":"group_1","name":"Auth flow"}]}"#
-            .to_string(),
-        diff_summary: "5 files changed across auth and validation modules.".to_string(),
-        groups: vec![RefinementGroupInput {
-            id: "group_1".to_string(),
-            name: "Auth flow".to_string(),
-            entrypoint: Some("src/auth.ts::login".to_string()),
-            files: vec![
-                "src/auth.ts".to_string(),
-                "src/token-service.ts".to_string(),
-                "src/validation.ts".to_string(),
-            ],
-            risk_score: 0.72,
-            review_order: 1,
-        }],
-        infrastructure_files: vec![],
     }
 }

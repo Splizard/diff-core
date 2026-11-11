@@ -13,7 +13,6 @@ export interface RunOptions {
   staged?: boolean;
   unstaged?: boolean;
   annotate?: boolean;
-  refine?: boolean;
 }
 
 export interface RunResult {
@@ -53,10 +52,6 @@ export function buildArgs(options: RunOptions): string[] {
 
   if (options.annotate) {
     args.push("--annotate");
-  }
-
-  if (options.refine) {
-    args.push("--refine");
   }
 
   return args;
