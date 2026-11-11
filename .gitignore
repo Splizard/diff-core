@@ -35,3 +35,5 @@ loop.sh
 # Nix build output
 /result
 /result-*
+__pycache__/
+*.pyc
